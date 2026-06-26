@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import tarfile
 import zipfile
@@ -17,6 +18,7 @@ from sandbox_service.models import (
     BackendCapabilities,
     BackendsResponse,
     CreateSessionRequest,
+    CreateSnapshotRequest,
     ExecRequest,
     ExecResponse,
     FileInfo,
@@ -26,11 +28,12 @@ from sandbox_service.models import (
     HealthResponse,
     ReadyResponse,
     SessionResponse,
+    SnapshotResponse,
     SyncArtifactsRequest,
     WriteFileRequest,
 )
 from sandbox_service.path_guard import PathEscapeError, resolve_host_path, sha256_file, write_file
-from sandbox_service.repositories import SessionRecord
+from sandbox_service.repositories import SessionRecord, SnapshotRecord
 from sandbox_service.runtime import get_runtime
 from sandbox_service.runtime.local import build_sandbox_name
 from sandbox_service.workspace import ensure_workspace, list_workspace_entries, remove_workspace
@@ -85,6 +88,32 @@ def _artifact_info(record) -> ArtifactInfo:
     )
 
 
+def _snapshot_response(record: SnapshotRecord) -> SnapshotResponse:
+    return SnapshotResponse(
+        id=record.id,
+        workspace_id=record.workspace_id,
+        source_session_id=record.source_session_id,
+        name=record.name,
+        digest=record.digest,
+        image_ref=record.image_ref,
+        size_bytes=record.size_bytes,
+        metadata=record.metadata,
+        created_at=record.created_at,
+    )
+
+
+def _default_snapshot_name(session_id: str) -> str:
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+    return f"snap-{digest}"
+
+
+def _get_session(state: AppState, session_id: str) -> SessionRecord:
+    try:
+        return state.sessions.get(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session_not_found") from None
+
+
 def _get_active_session(state: AppState, session_id: str) -> SessionRecord:
     try:
         session = state.sessions.get(session_id)
@@ -119,6 +148,7 @@ async def list_backends(state: Annotated[AppState, Depends(get_state)], _: AuthD
             available=runtime.is_available(),
             supports_network_policy=name == "microsandbox",
             supports_streaming=False,
+            supports_snapshots=runtime.supports_snapshots(),
         )
         for name, runtime in state.runtimes.items()
     ]
@@ -134,9 +164,25 @@ async def create_session(
     state: Annotated[AppState, Depends(get_state)],
     _: AuthDep,
 ) -> SessionResponse:
-    backend_name = body.backend or state.settings.default_backend
+    snapshot_record: SnapshotRecord | None = None
+    if body.snapshot_id:
+        try:
+            snapshot_record = state.snapshots.get(body.snapshot_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="snapshot_not_found") from None
+        if snapshot_record.workspace_id != body.workspace_id:
+            raise HTTPException(status_code=400, detail="snapshot_workspace_mismatch")
+
+    backend_name = "microsandbox" if snapshot_record else (body.backend or state.settings.default_backend)
     runtime = get_runtime(state.runtimes, backend_name)
-    image = body.image or state.settings.default_image
+    if snapshot_record and not runtime.supports_snapshots():
+        raise HTTPException(status_code=400, detail="snapshots_not_supported")
+
+    image = (
+        snapshot_record.image_ref
+        if snapshot_record
+        else (body.image or state.settings.default_image)
+    )
     session = state.sessions.create(
         workspace_id=body.workspace_id,
         run_id=body.run_id,
@@ -156,6 +202,7 @@ async def create_session(
         image=image,
         root_path=root_path,
         limits=body.limits,
+        snapshot=snapshot_record.msb_name if snapshot_record else None,
     )
     record = state.sessions.update_runtime_paths(
         session.id,
@@ -238,6 +285,98 @@ async def delete_session(
     await runtime.delete_session(sandbox_name=sandbox_name)
     remove_workspace(state.settings.resolved_scratch_root, session_id)
     state.sessions.delete(session_id)
+    return Response(status_code=204)
+
+
+@router.post("/v1/sessions/{session_id}/snapshots", response_model=SnapshotResponse, status_code=201)
+async def create_snapshot(
+    session_id: str,
+    body: CreateSnapshotRequest,
+    state: Annotated[AppState, Depends(get_state)],
+    _: AuthDep,
+) -> SnapshotResponse:
+    session = _get_session(state, session_id)
+    if session.backend != "microsandbox":
+        raise HTTPException(status_code=400, detail="snapshots_not_supported")
+
+    runtime = get_runtime(state.runtimes, session.backend)
+    if not runtime.supports_snapshots():
+        raise HTTPException(status_code=400, detail="snapshots_not_supported")
+
+    if session.status in {"active", "creating"}:
+        if not body.stop_session:
+            raise HTTPException(status_code=409, detail="session_not_stopped")
+        if session.sandbox_name:
+            await runtime.stop_session(sandbox_name=session.sandbox_name)
+        state.sessions.update_status(session_id, "stopped")
+    elif session.status not in {"stopped", "expired"}:
+        raise HTTPException(status_code=409, detail=f"session_{session.status}")
+
+    snapshot_name = body.name or _default_snapshot_name(session_id)
+    labels = {
+        "workspace_id": session.workspace_id,
+        "source_session_id": session_id,
+        **{k: str(v) for k, v in body.metadata.items()},
+    }
+    sandbox_name = session.sandbox_name or build_sandbox_name(session_id)
+    info = await runtime.create_snapshot(
+        sandbox_name=sandbox_name,
+        name=snapshot_name,
+        labels=labels,
+    )
+    record = state.snapshots.create(
+        workspace_id=session.workspace_id,
+        source_session_id=session_id,
+        name=snapshot_name,
+        msb_name=info.msb_name,
+        digest=info.digest,
+        image_ref=info.image_ref,
+        size_bytes=info.size_bytes,
+        metadata=body.metadata,
+    )
+    return _snapshot_response(record)
+
+
+@router.get("/v1/snapshots", response_model=list[SnapshotResponse])
+async def list_snapshots(
+    state: Annotated[AppState, Depends(get_state)],
+    _: AuthDep,
+    workspace_id: str,
+) -> list[SnapshotResponse]:
+    records = state.snapshots.list_snapshots(workspace_id=workspace_id)
+    return [_snapshot_response(record) for record in records]
+
+
+@router.get("/v1/snapshots/{snapshot_id}", response_model=SnapshotResponse)
+async def get_snapshot(
+    snapshot_id: str,
+    state: Annotated[AppState, Depends(get_state)],
+    _: AuthDep,
+) -> SnapshotResponse:
+    try:
+        return _snapshot_response(state.snapshots.get(snapshot_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="snapshot_not_found") from None
+
+
+@router.delete("/v1/snapshots/{snapshot_id}", status_code=204)
+async def delete_snapshot(
+    snapshot_id: str,
+    state: Annotated[AppState, Depends(get_state)],
+    _: AuthDep,
+) -> Response:
+    try:
+        record = state.snapshots.get(snapshot_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="snapshot_not_found") from None
+
+    runtime = get_runtime(state.runtimes, "microsandbox")
+    if runtime.supports_snapshots():
+        try:
+            await runtime.delete_snapshot(msb_name=record.msb_name)
+        except Exception:
+            pass
+    state.snapshots.delete(snapshot_id)
     return Response(status_code=204)
 
 

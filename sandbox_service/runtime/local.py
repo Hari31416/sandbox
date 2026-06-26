@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sandbox_service.models import SessionLimits
 from sandbox_service.path_guard import normalize_sandbox_path
-from sandbox_service.runtime.base import ExecResult, SandboxRuntime
+from sandbox_service.runtime.base import ExecResult, SandboxRuntime, SnapshotInfo
 from sandbox_service.workspace import ensure_workspace
 
 
@@ -27,6 +27,9 @@ class LocalRuntime:
     def is_available(self) -> bool:
         return True
 
+    def supports_snapshots(self) -> bool:
+        return False
+
     async def create_session(
         self,
         *,
@@ -35,7 +38,10 @@ class LocalRuntime:
         image: str,
         root_path: str,
         limits: SessionLimits,
+        snapshot: str | None = None,
     ) -> None:
+        if snapshot is not None:
+            raise NotImplementedError("local backend does not support snapshots")
         ensure_workspace(self._scratch_root, session_id)
 
     async def stop_session(self, *, sandbox_name: str) -> None:
@@ -59,7 +65,10 @@ class LocalRuntime:
         env: dict[str, str],
         limits: SessionLimits,
         max_output_bytes: int,
+        snapshot: str | None = None,
     ) -> ExecResult:
+        if snapshot is not None:
+            raise NotImplementedError("local backend does not support snapshots")
         workspace = Path(root_path)
         normalized_cwd = normalize_sandbox_path(cwd)
         workdir = workspace if not normalized_cwd else (workspace / normalized_cwd).resolve()
@@ -89,6 +98,21 @@ class LocalRuntime:
             stdout=stdout,
             stderr=stderr,
         )
+
+    async def create_snapshot(
+        self,
+        *,
+        sandbox_name: str,
+        name: str,
+        labels: dict[str, str],
+    ) -> SnapshotInfo:
+        raise NotImplementedError("local backend does not support snapshots")
+
+    async def delete_snapshot(self, *, msb_name: str) -> None:
+        raise NotImplementedError("local backend does not support snapshots")
+
+    async def list_snapshots(self) -> list[SnapshotInfo]:
+        return []
 
 
 def guest_cwd(guest_workspace_path: str, cwd: str) -> str:

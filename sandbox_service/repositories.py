@@ -69,6 +69,20 @@ class ArtifactRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class SnapshotRecord:
+    id: str
+    workspace_id: str
+    source_session_id: str | None
+    name: str
+    msb_name: str
+    digest: str
+    image_ref: str
+    size_bytes: int
+    metadata: dict
+    created_at: datetime
+
+
 class SessionRepository:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -424,5 +438,95 @@ def _row_to_artifact(row) -> ArtifactRecord:
         artifact_uri=row["artifact_uri"],
         size_bytes=row["size_bytes"],
         sha256=row["sha256"],
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+class SnapshotRepository:
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def create(
+        self,
+        *,
+        workspace_id: str,
+        source_session_id: str | None,
+        name: str,
+        msb_name: str,
+        digest: str,
+        image_ref: str,
+        size_bytes: int,
+        metadata: dict,
+    ) -> SnapshotRecord:
+        snapshot_id = f"snap_{uuid.uuid4().hex}"
+        now = _utcnow()
+        with get_connection(self._db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO snapshots (
+                    id, workspace_id, source_session_id, name, msb_name,
+                    digest, image_ref, size_bytes, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    workspace_id,
+                    source_session_id,
+                    name,
+                    msb_name,
+                    digest,
+                    image_ref,
+                    size_bytes,
+                    json.dumps(metadata),
+                    _iso(now),
+                ),
+            )
+        return self.get(snapshot_id)
+
+    def get(self, snapshot_id: str) -> SnapshotRecord:
+        with get_connection(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(snapshot_id)
+        return _row_to_snapshot(row)
+
+    def list_snapshots(
+        self,
+        *,
+        workspace_id: str | None = None,
+    ) -> list[SnapshotRecord]:
+        if workspace_id is None:
+            with get_connection(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM snapshots ORDER BY created_at DESC"
+                ).fetchall()
+        else:
+            with get_connection(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM snapshots WHERE workspace_id = ? ORDER BY created_at DESC",
+                    (workspace_id,),
+                ).fetchall()
+        return [_row_to_snapshot(row) for row in rows]
+
+    def delete(self, snapshot_id: str) -> SnapshotRecord:
+        record = self.get(snapshot_id)
+        with get_connection(self._db_path) as conn:
+            conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+        return record
+
+
+def _row_to_snapshot(row) -> SnapshotRecord:
+    return SnapshotRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        source_session_id=row["source_session_id"],
+        name=row["name"],
+        msb_name=row["msb_name"],
+        digest=row["digest"],
+        image_ref=row["image_ref"],
+        size_bytes=row["size_bytes"],
+        metadata=json.loads(row["metadata_json"]),
         created_at=_parse_iso(row["created_at"]),
     )

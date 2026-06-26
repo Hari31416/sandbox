@@ -33,8 +33,27 @@ export interface CreateSessionRequest {
   run_id?: string | null
   image?: string | null
   backend?: BackendName | null
+  snapshot_id?: string | null
   limits?: Partial<SessionLimits>
   metadata?: Record<string, unknown>
+}
+
+export interface Snapshot {
+  id: string
+  workspace_id: string
+  source_session_id: string | null
+  name: string
+  digest: string
+  image_ref: string
+  size_bytes: number
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface CreateSnapshotRequest {
+  name?: string | null
+  metadata?: Record<string, unknown>
+  stop_session?: boolean
 }
 
 export interface ExecResult {
@@ -78,6 +97,7 @@ export interface BackendCapabilities {
   available: boolean
   supports_network_policy: boolean
   supports_streaming: boolean
+  supports_snapshots: boolean
 }
 
 export interface BackendsResponse {

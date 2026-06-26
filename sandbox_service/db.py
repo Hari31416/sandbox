@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    source_session_id TEXT,
+    name TEXT NOT NULL,
+    msb_name TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    image_ref TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(workspace_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_workspace ON snapshots(workspace_id);
 """
 
 

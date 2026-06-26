@@ -176,3 +176,81 @@ export function useSyncArtifacts() {
     },
   })
 }
+
+export function useSnapshots() {
+  const client = useSandboxClient()
+  const workspaceId = useSandboxStore((s) => s.workspaceId)
+  return useQuery({
+    queryKey: ["sandbox", "snapshots", workspaceId],
+    queryFn: () => client.listSnapshots(workspaceId),
+    refetchInterval: 10_000,
+  })
+}
+
+export function useCreateSnapshot() {
+  const client = useSandboxClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      name,
+      stopSession,
+    }: {
+      sessionId: string
+      name?: string
+      stopSession?: boolean
+    }) =>
+      client.createSnapshot(sessionId, {
+        name,
+        stop_session: stopSession,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["sandbox", "snapshots"] })
+      void queryClient.invalidateQueries({ queryKey: ["sandbox", "sessions"] })
+    },
+  })
+}
+
+export function useDeleteSnapshot() {
+  const client = useSandboxClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (snapshotId: string) => client.deleteSnapshot(snapshotId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["sandbox", "snapshots"] })
+    },
+  })
+}
+
+export function useRestoreSnapshot() {
+  const client = useSandboxClient()
+  const queryClient = useQueryClient()
+  const setActiveSessionId = useSandboxStore((s) => s.setActiveSessionId)
+  const workspaceId = useSandboxStore((s) => s.workspaceId)
+  const memoryMb = useSandboxStore((s) => s.memoryMb)
+  const network = useSandboxStore((s) => s.network)
+
+  return useMutation({
+    mutationFn: (snapshotId: string) =>
+      client.createSession({
+        workspace_id: workspaceId,
+        run_id: `run_${Date.now()}`,
+        backend: "microsandbox",
+        snapshot_id: snapshotId,
+        limits: {
+          memory_mb: memoryMb,
+          network,
+          cpu: 1,
+          disk_mb: 2048,
+          timeout_seconds: 300,
+        },
+        metadata: { purpose: "snapshot_restore" },
+      }),
+    onSuccess: (session) => {
+      setActiveSessionId(session.id)
+      void queryClient.invalidateQueries({ queryKey: ["sandbox", "sessions"] })
+    },
+  })
+}

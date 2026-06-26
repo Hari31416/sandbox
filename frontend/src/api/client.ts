@@ -2,12 +2,14 @@ import type {
   ArtifactInfo,
   BackendsResponse,
   CreateSessionRequest,
+  CreateSnapshotRequest,
   ExecResult,
   FileInfo,
   FileListEntry,
   HealthResponse,
   ReadyResponse,
   Session,
+  Snapshot,
 } from "./types"
 
 export class SandboxApiError extends Error {
@@ -178,6 +180,26 @@ export function createSandboxClient(baseUrl: string, authToken?: string) {
         { method: "POST" },
         auth,
       ),
+
+    createSnapshot: (sessionId: string, body?: CreateSnapshotRequest) =>
+      request<Snapshot>(baseUrl, `/v1/sessions/${sessionId}/snapshots`, {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      }, auth),
+
+    listSnapshots: (workspaceId: string) =>
+      request<Snapshot[]>(
+        baseUrl,
+        `/v1/snapshots?${new URLSearchParams({ workspace_id: workspaceId })}`,
+        {},
+        auth,
+      ),
+
+    getSnapshot: (snapshotId: string) =>
+      request<Snapshot>(baseUrl, `/v1/snapshots/${snapshotId}`, {}, auth),
+
+    deleteSnapshot: (snapshotId: string) =>
+      request<void>(baseUrl, `/v1/snapshots/${snapshotId}`, { method: "DELETE" }, auth),
   }
 }
 

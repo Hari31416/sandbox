@@ -11,6 +11,7 @@ from sandbox_service.repositories import (
     ExecRepository,
     FileMetadataRepository,
     SessionRepository,
+    SnapshotRepository,
 )
 from sandbox_service.runtime import SandboxRuntime, build_runtime_registry
 
@@ -22,6 +23,7 @@ class AppState:
     execs: ExecRepository
     files: FileMetadataRepository
     artifacts: ArtifactRepository
+    snapshots: SnapshotRepository
     artifact_exporter: ArtifactExporter
     runtimes: dict[str, SandboxRuntime]
     cleanup: CleanupLoop
@@ -40,6 +42,7 @@ def build_app_state(settings: Settings) -> AppState:
     execs = ExecRepository(db_path)
     files = FileMetadataRepository(db_path)
     artifacts = ArtifactRepository(db_path)
+    snapshots = SnapshotRepository(db_path)
     runtimes = build_runtime_registry(settings)
     cleanup = CleanupLoop(
         sessions=sessions,
@@ -55,6 +58,7 @@ def build_app_state(settings: Settings) -> AppState:
         execs=execs,
         files=files,
         artifacts=artifacts,
+        snapshots=snapshots,
         artifact_exporter=ArtifactExporter(
             artifacts_root=artifacts_root,
             repository=artifacts,

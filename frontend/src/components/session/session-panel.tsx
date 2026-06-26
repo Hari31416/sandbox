@@ -1,4 +1,5 @@
-import { Loader2, Plus, Trash2 } from "lucide-react"
+import { useState } from "react"
+import { Camera, Loader2, Plus, Trash2 } from "lucide-react"
 
 import type { Session } from "@/api/types"
 import { Badge } from "@/components/ui/badge"
@@ -7,9 +8,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
+  useBackends,
   useCreateSession,
+  useCreateSnapshot,
   useDeleteSession,
   useSessions,
+  useSnapshots,
   useStopSession,
 } from "@/hooks/use-sandbox-queries"
 import { cn } from "@/lib/utils"
@@ -44,16 +48,26 @@ export function SessionPanel() {
   const setActiveSessionId = useSandboxStore((s) => s.setActiveSessionId)
 
   const sessions = useSessions()
+  const snapshots = useSnapshots()
+  const backends = useBackends()
   const createSession = useCreateSession()
+  const createSnapshot = useCreateSnapshot()
   const stopSession = useStopSession()
   const deleteSession = useDeleteSession()
+
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>("")
+
+  const supportsSnapshots = backends.data?.backends.some(
+    (b) => b.name === "microsandbox" && b.supports_snapshots,
+  )
 
   const handleCreate = () => {
     createSession.mutate({
       workspace_id: workspaceId,
       run_id: runId || `run_${Date.now()}`,
-      image,
-      backend,
+      image: selectedSnapshotId ? undefined : image,
+      backend: selectedSnapshotId ? "microsandbox" : backend,
+      snapshot_id: selectedSnapshotId || undefined,
       limits: {
         memory_mb: memoryMb,
         network,
@@ -61,7 +75,7 @@ export function SessionPanel() {
         disk_mb: 2048,
         timeout_seconds: 300,
       },
-      metadata: { purpose: "sandbox_console" },
+      metadata: { purpose: selectedSnapshotId ? "snapshot_restore" : "sandbox_console" },
     })
   }
 
@@ -84,7 +98,11 @@ export function SessionPanel() {
             </div>
             <div className="space-y-1.5">
               <Label>Image</Label>
-              <Input value={image} onChange={(e) => setImage(e.target.value)} />
+              <Input
+                value={image}
+                onChange={(e) => setImage(e.target.value)}
+                disabled={Boolean(selectedSnapshotId)}
+              />
             </div>
             <div className="space-y-1.5">
               <Label>Memory (MB)</Label>
@@ -120,6 +138,23 @@ export function SessionPanel() {
               </select>
             </div>
           </div>
+          {supportsSnapshots && (snapshots.data?.length ?? 0) > 0 && (
+            <div className="space-y-1.5">
+              <Label>Restore from snapshot (optional)</Label>
+              <select
+                className="flex h-8 w-full border border-input bg-background/80 px-2.5 text-xs outline-none"
+                value={selectedSnapshotId}
+                onChange={(e) => setSelectedSnapshotId(e.target.value)}
+              >
+                <option value="">None — use image above</option>
+                {(snapshots.data ?? []).map((snap) => (
+                  <option key={snap.id} value={snap.id}>
+                    {snap.name} ({snap.image_ref})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <Button className="w-full" onClick={handleCreate} disabled={createSession.isPending}>
             {createSession.isPending ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -165,7 +200,7 @@ export function SessionPanel() {
                   {session.backend} · {session.image}
                 </p>
               </button>
-              <div className="mt-2 flex gap-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="xs"
@@ -174,6 +209,50 @@ export function SessionPanel() {
                 >
                   Stop
                 </Button>
+                {supportsSnapshots &&
+                  session.backend === "microsandbox" &&
+                  (session.status === "stopped" || session.status === "expired") && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      disabled={createSnapshot.isPending}
+                      onClick={() =>
+                        createSnapshot.mutate({
+                          sessionId: session.id,
+                          stopSession: false,
+                        })
+                      }
+                    >
+                      {createSnapshot.isPending ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Camera className="size-3" />
+                      )}
+                      Save snapshot
+                    </Button>
+                  )}
+                {supportsSnapshots &&
+                  session.backend === "microsandbox" &&
+                  session.status === "active" && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      disabled={createSnapshot.isPending}
+                      onClick={() =>
+                        createSnapshot.mutate({
+                          sessionId: session.id,
+                          stopSession: true,
+                        })
+                      }
+                    >
+                      {createSnapshot.isPending ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Camera className="size-3" />
+                      )}
+                      Stop & snapshot
+                    </Button>
+                  )}
                 <Button
                   variant="destructive"
                   size="xs"

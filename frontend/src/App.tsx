@@ -6,6 +6,7 @@ import { ExecPanel } from "@/components/exec/exec-panel"
 import { FilesPanel } from "@/components/files/files-panel"
 import { HeaderBar } from "@/components/layout/header-bar"
 import { SessionPanel } from "@/components/session/session-panel"
+import { SnapshotsPanel } from "@/components/snapshots/snapshots-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useSession } from "@/hooks/use-sandbox-queries"
 import { useSandboxStore } from "@/store/sandbox-store"
@@ -48,6 +49,7 @@ function WorkspaceMain() {
             <TabsTrigger value="exec">Execute</TabsTrigger>
             <TabsTrigger value="files">Files</TabsTrigger>
             <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
+            <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
           </TabsList>
           <TabsContent value="exec">
             <ExecPanel />
@@ -57,6 +59,9 @@ function WorkspaceMain() {
           </TabsContent>
           <TabsContent value="artifacts">
             <ArtifactsPanel />
+          </TabsContent>
+          <TabsContent value="snapshots">
+            <SnapshotsPanel />
           </TabsContent>
         </Tabs>
       </section>

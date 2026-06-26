@@ -25,8 +25,27 @@ class CreateSessionRequest(BaseModel):
     run_id: str | None = None
     image: str | None = None
     backend: BackendName | None = None
+    snapshot_id: str | None = None
     limits: SessionLimits = Field(default_factory=SessionLimits)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateSnapshotRequest(BaseModel):
+    name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    stop_session: bool = True
+
+
+class SnapshotResponse(BaseModel):
+    id: str
+    workspace_id: str
+    source_session_id: str | None
+    name: str
+    digest: str
+    image_ref: str
+    size_bytes: int
+    metadata: dict[str, Any]
+    created_at: datetime
 
 
 class SessionResponse(BaseModel):
@@ -112,6 +131,7 @@ class BackendCapabilities(BaseModel):
     available: bool
     supports_network_policy: bool
     supports_streaming: bool
+    supports_snapshots: bool
 
 
 class BackendsResponse(BaseModel):

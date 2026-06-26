@@ -1,16 +1,102 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
 import httpx
 import pytest
-from contextlib import asynccontextmanager
 
 from sandbox import HttpSandboxBackend
+from sandbox_service.app_state import build_app_state
 from sandbox_service.config import get_settings
 from sandbox_service.db import init_database
 from sandbox_service.main import create_app
-from sandbox_service.app_state import build_app_state
+from sandbox_service.models import SessionLimits
+from sandbox_service.runtime.base import ExecResult, SnapshotInfo
+
+
+@dataclass
+class FakeMicrosandboxRuntime:
+    name: str = "microsandbox"
+    snapshots_created: list[dict] = field(default_factory=list)
+    sessions_created: list[dict] = field(default_factory=list)
+    deleted_snapshots: list[str] = field(default_factory=list)
+    stopped_sandboxes: list[str] = field(default_factory=list)
+
+    def is_available(self) -> bool:
+        return True
+
+    def supports_snapshots(self) -> bool:
+        return True
+
+    async def create_session(
+        self,
+        *,
+        session_id: str,
+        sandbox_name: str,
+        image: str,
+        root_path: str,
+        limits: SessionLimits,
+        snapshot: str | None = None,
+    ) -> None:
+        self.sessions_created.append(
+            {
+                "session_id": session_id,
+                "sandbox_name": sandbox_name,
+                "image": image,
+                "root_path": root_path,
+                "snapshot": snapshot,
+            }
+        )
+
+    async def stop_session(self, *, sandbox_name: str) -> None:
+        self.stopped_sandboxes.append(sandbox_name)
+
+    async def delete_session(self, *, sandbox_name: str) -> None:
+        return None
+
+    async def list_sandboxes(self) -> list[str]:
+        return []
+
+    async def exec_command(
+        self,
+        *,
+        sandbox_name: str,
+        image: str,
+        root_path: str,
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        env: dict[str, str],
+        limits: SessionLimits,
+        max_output_bytes: int,
+        snapshot: str | None = None,
+    ) -> ExecResult:
+        return ExecResult(exit_code=0, stdout=b"ok\n", stderr=b"")
+
+    async def create_snapshot(
+        self,
+        *,
+        sandbox_name: str,
+        name: str,
+        labels: dict[str, str],
+    ) -> SnapshotInfo:
+        self.snapshots_created.append(
+            {"sandbox_name": sandbox_name, "name": name, "labels": labels}
+        )
+        return SnapshotInfo(
+            msb_name=name,
+            digest=f"digest-{name}",
+            image_ref="python:3.12",
+            size_bytes=1024,
+        )
+
+    async def delete_snapshot(self, *, msb_name: str) -> None:
+        self.deleted_snapshots.append(msb_name)
+
+    async def list_snapshots(self) -> list[SnapshotInfo]:
+        return []
 
 
 @pytest.fixture
@@ -38,6 +124,203 @@ async def client(tmp_path, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
     get_settings.cache_clear()
+
+
+@pytest.fixture
+async def mock_msb_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    app = create_app()
+    state = build_app_state(settings)
+    fake_runtime = FakeMicrosandboxRuntime()
+    state.runtimes["microsandbox"] = fake_runtime
+    app.state.sandbox = state
+
+    @asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
+    app.router.lifespan_context = noop_lifespan
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+        yield http_client, fake_runtime
+    get_settings.cache_clear()
+
+
+async def _create_microsandbox_session(
+    client: httpx.AsyncClient,
+    *,
+    workspace_id: str = "ws_msb",
+    status: str = "active",
+) -> dict:
+    create = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": workspace_id,
+            "run_id": "run_msb",
+            "image": "python:3.12",
+            "backend": "microsandbox",
+            "limits": {"network": "disabled"},
+        },
+    )
+    assert create.status_code == 201
+    session = create.json()
+    if status == "stopped":
+        stop = await client.post(f"/v1/sessions/{session['id']}/stop")
+        assert stop.status_code == 200
+        session = stop.json()
+    return session
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
+async def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    app = create_app()
+    state = build_app_state(settings)
+    app.state.sandbox = state
+
+    @asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
+    app.router.lifespan_context = noop_lifespan
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+        yield http_client
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_backends_include_snapshot_capability(client: httpx.AsyncClient):
+    response = await client.get("/v1/backends")
+    assert response.status_code == 200
+    backends = {item["name"]: item for item in response.json()["backends"]}
+    assert "supports_snapshots" in backends["local"]
+    assert backends["local"]["supports_snapshots"] is False
+
+
+@pytest.mark.asyncio
+async def test_local_snapshot_not_supported(client: httpx.AsyncClient):
+    create = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": "ws_local_snap",
+            "backend": "local",
+            "limits": {"network": "disabled"},
+        },
+    )
+    assert create.status_code == 201
+    session_id = create.json()["id"]
+    await client.post(f"/v1/sessions/{session_id}/stop")
+
+    response = await client.post(f"/v1/sessions/{session_id}/snapshots", json={})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "snapshots_not_supported"
+
+    await client.delete(f"/v1/sessions/{session_id}")
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_on_stopped_session(mock_msb_client):
+    client, fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"name": "my-snapshot"},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "my-snapshot"
+    assert body["digest"] == "digest-my-snapshot"
+    assert body["source_session_id"] == session["id"]
+    assert len(fake_runtime.snapshots_created) == 1
+
+    listed = await client.get("/v1/snapshots", params={"workspace_id": "ws_msb"})
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_stops_active_session(mock_msb_client):
+    client, fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="active")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"stop_session": True},
+    )
+    assert response.status_code == 201
+    assert fake_runtime.stopped_sandboxes
+
+    refreshed = await client.get(f"/v1/sessions/{session['id']}")
+    assert refreshed.json()["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_requires_stop_when_active(mock_msb_client):
+    client, _fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="active")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"stop_session": False},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "session_not_stopped"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_list_get_delete_lifecycle(mock_msb_client):
+    client, fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+
+    created = await client.post(f"/v1/sessions/{session['id']}/snapshots", json={})
+    snapshot_id = created.json()["id"]
+
+    got = await client.get(f"/v1/snapshots/{snapshot_id}")
+    assert got.status_code == 200
+
+    deleted = await client.delete(f"/v1/snapshots/{snapshot_id}")
+    assert deleted.status_code == 204
+    assert fake_runtime.deleted_snapshots == [created.json()["name"]]
+
+    missing = await client.get(f"/v1/snapshots/{snapshot_id}")
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_session_from_snapshot(mock_msb_client):
+    client, fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+    created = await client.post(f"/v1/sessions/{session['id']}/snapshots", json={})
+    snapshot_id = created.json()["id"]
+
+    restore = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": "ws_msb",
+            "snapshot_id": snapshot_id,
+            "limits": {"network": "disabled"},
+        },
+    )
+    assert restore.status_code == 201
+    restored = restore.json()
+    assert restored["backend"] == "microsandbox"
+    assert restored["image"] == "python:3.12"
+    assert fake_runtime.sessions_created[-1]["snapshot"] == created.json()["name"]
 
 
 @pytest.mark.asyncio
