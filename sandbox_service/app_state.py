@@ -33,9 +33,11 @@ def build_app_state(settings: Settings) -> AppState:
     db_path = settings.resolved_sqlite_path
     scratch_root = settings.resolved_scratch_root
     artifacts_root = settings.resolved_artifacts_root
+    snapshots_root = settings.resolved_snapshots_root
     exec_logs_root = settings.resolved_exec_logs_root
     scratch_root.mkdir(parents=True, exist_ok=True)
     artifacts_root.mkdir(parents=True, exist_ok=True)
+    snapshots_root.mkdir(parents=True, exist_ok=True)
     exec_logs_root.mkdir(parents=True, exist_ok=True)
 
     sessions = SessionRepository(db_path)

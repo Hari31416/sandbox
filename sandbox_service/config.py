@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     sqlite_path: Path | None = None
     scratch_root: Path | None = None
     artifacts_root: Path | None = None
+    snapshots_root: Path | None = None
     exec_logs_root: Path | None = None
 
     default_backend: str = "local"
@@ -51,6 +52,12 @@ class Settings(BaseSettings):
         if self.artifacts_root is not None:
             return self.artifacts_root
         return self.data_dir / "artifacts"
+
+    @property
+    def resolved_snapshots_root(self) -> Path:
+        if self.snapshots_root is not None:
+            return self.snapshots_root
+        return self.data_dir / "snapshot-workspaces"
 
     @property
     def resolved_exec_logs_root(self) -> Path:

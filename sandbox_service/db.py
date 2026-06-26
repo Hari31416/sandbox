@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
     digest TEXT NOT NULL,
     image_ref TEXT NOT NULL,
     size_bytes INTEGER NOT NULL,
+    include_workspace INTEGER NOT NULL DEFAULT 0,
+    workspace_bytes INTEGER NOT NULL DEFAULT 0,
+    workspace_archive_path TEXT,
     metadata_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(workspace_id, name)
@@ -86,11 +89,27 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_workspace ON snapshots(workspace_id);
 """
 
+SNAPSHOT_MIGRATIONS = (
+    ("include_workspace", "INTEGER NOT NULL DEFAULT 0"),
+    ("workspace_bytes", "INTEGER NOT NULL DEFAULT 0"),
+    ("workspace_archive_path", "TEXT"),
+)
+
+
+def _migrate_snapshots_table(conn: sqlite3.Connection) -> None:
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
+    }
+    for name, definition in SNAPSHOT_MIGRATIONS:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {name} {definition}")
+
 
 def init_database(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate_snapshots_table(conn)
         conn.commit()
 
 

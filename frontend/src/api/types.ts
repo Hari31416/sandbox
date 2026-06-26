@@ -46,6 +46,8 @@ export interface Snapshot {
   digest: string
   image_ref: string
   size_bytes: number
+  include_workspace: boolean
+  workspace_bytes: number
   metadata: Record<string, unknown>
   created_at: string
 }
@@ -54,6 +56,7 @@ export interface CreateSnapshotRequest {
   name?: string | null
   metadata?: Record<string, unknown>
   stop_session?: boolean
+  include_workspace?: boolean
 }
 
 export interface ExecResult {

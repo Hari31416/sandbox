@@ -67,6 +67,28 @@ class MicrosandboxRuntime:
             return await Sandbox.start(sandbox_name, detached=True)
         return await handle.connect()
 
+    async def _get_sandbox_handle(self, sandbox_name: str):
+        try:
+            return await Sandbox.get(sandbox_name)
+        except Exception:
+            handles = {handle.name: handle for handle in await Sandbox.list()}
+            handle = handles.get(sandbox_name)
+            if handle is None:
+                raise RuntimeError(f"sandbox not found: {sandbox_name}") from None
+            return handle
+
+    async def _ensure_sandbox_stopped(self, sandbox_name: str) -> None:
+        connected = self._sandboxes.pop(sandbox_name, None)
+        if connected is not None:
+            await connected.stop_and_wait()
+            return
+
+        handle = await self._get_sandbox_handle(sandbox_name)
+        status = str(handle.status).lower()
+        if status in {"running", "paused"}:
+            await handle.stop()
+            await handle.wait_until_stopped()
+
     async def create_session(
         self,
         *,
@@ -103,15 +125,7 @@ class MicrosandboxRuntime:
         self._sandboxes[sandbox_name] = sandbox
 
     async def stop_session(self, *, sandbox_name: str) -> None:
-        sandbox = self._sandboxes.get(sandbox_name)
-        if sandbox is None:
-            handles = {handle.name: handle for handle in await Sandbox.list()}
-            handle = handles.get(sandbox_name)
-            if handle is not None:
-                await handle.stop()
-            return
-        await sandbox.stop_and_wait()
-        self._sandboxes.pop(sandbox_name, None)
+        await self._ensure_sandbox_stopped(sandbox_name)
 
     async def delete_session(self, *, sandbox_name: str) -> None:
         sandbox = self._sandboxes.pop(sandbox_name, None)
@@ -144,17 +158,7 @@ class MicrosandboxRuntime:
         if not self.is_available():
             raise RuntimeError("microsandbox runtime is not installed")
 
-        sandbox = self._sandboxes.get(sandbox_name)
-        if sandbox is None:
-            handles = {handle.name: handle for handle in await Sandbox.list()}
-            handle = handles.get(sandbox_name)
-            if handle is None:
-                raise RuntimeError(f"sandbox not found: {sandbox_name}")
-            sandbox = await self._attach_existing_sandbox(sandbox_name)
-            self._sandboxes[sandbox_name] = sandbox
-
-        await sandbox.stop_and_wait()
-        self._sandboxes.pop(sandbox_name, None)
+        await self._ensure_sandbox_stopped(sandbox_name)
 
         snap = await Snapshot.create(
             source_sandbox=sandbox_name,

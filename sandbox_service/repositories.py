@@ -79,6 +79,9 @@ class SnapshotRecord:
     digest: str
     image_ref: str
     size_bytes: int
+    include_workspace: bool
+    workspace_bytes: int
+    workspace_archive_path: str | None
     metadata: dict
     created_at: datetime
 
@@ -456,6 +459,9 @@ class SnapshotRepository:
         digest: str,
         image_ref: str,
         size_bytes: int,
+        include_workspace: bool = False,
+        workspace_bytes: int = 0,
+        workspace_archive_path: str | None = None,
         metadata: dict,
     ) -> SnapshotRecord:
         snapshot_id = f"snap_{uuid.uuid4().hex}"
@@ -465,8 +471,9 @@ class SnapshotRepository:
                 """
                 INSERT INTO snapshots (
                     id, workspace_id, source_session_id, name, msb_name,
-                    digest, image_ref, size_bytes, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    digest, image_ref, size_bytes, include_workspace,
+                    workspace_bytes, workspace_archive_path, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_id,
@@ -477,9 +484,30 @@ class SnapshotRepository:
                     digest,
                     image_ref,
                     size_bytes,
+                    int(include_workspace),
+                    workspace_bytes,
+                    workspace_archive_path,
                     json.dumps(metadata),
                     _iso(now),
                 ),
+            )
+        return self.get(snapshot_id)
+
+    def update_workspace_bundle(
+        self,
+        snapshot_id: str,
+        *,
+        workspace_bytes: int,
+        workspace_archive_path: str,
+    ) -> SnapshotRecord:
+        with get_connection(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE snapshots
+                SET workspace_bytes = ?, workspace_archive_path = ?
+                WHERE id = ?
+                """,
+                (workspace_bytes, workspace_archive_path, snapshot_id),
             )
         return self.get(snapshot_id)
 
@@ -518,6 +546,7 @@ class SnapshotRepository:
 
 
 def _row_to_snapshot(row) -> SnapshotRecord:
+    keys = row.keys()
     return SnapshotRecord(
         id=row["id"],
         workspace_id=row["workspace_id"],
@@ -527,6 +556,11 @@ def _row_to_snapshot(row) -> SnapshotRecord:
         digest=row["digest"],
         image_ref=row["image_ref"],
         size_bytes=row["size_bytes"],
+        include_workspace=bool(row["include_workspace"]) if "include_workspace" in keys else False,
+        workspace_bytes=row["workspace_bytes"] if "workspace_bytes" in keys else 0,
+        workspace_archive_path=row["workspace_archive_path"]
+        if "workspace_archive_path" in keys
+        else None,
         metadata=json.loads(row["metadata_json"]),
         created_at=_parse_iso(row["created_at"]),
     )

@@ -47,6 +47,8 @@ export function SessionPanel() {
   const setMemoryMb = useSandboxStore((s) => s.setMemoryMb)
   const setActiveSessionId = useSandboxStore((s) => s.setActiveSessionId)
 
+  const [includeWorkspaceInSnapshot, setIncludeWorkspaceInSnapshot] = useState(true)
+
   const sessions = useSessions()
   const snapshots = useSnapshots()
   const backends = useBackends()
@@ -149,7 +151,8 @@ export function SessionPanel() {
                 <option value="">None — use image above</option>
                 {(snapshots.data ?? []).map((snap) => (
                   <option key={snap.id} value={snap.id}>
-                    {snap.name} ({snap.image_ref})
+                    {snap.name} ({snap.image_ref}
+                    {snap.include_workspace ? ", with files" : ", VM only"})
                   </option>
                 ))}
               </select>
@@ -177,6 +180,17 @@ export function SessionPanel() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
+          {supportsSnapshots && (
+            <label className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-foreground"
+                checked={includeWorkspaceInSnapshot}
+                onChange={(e) => setIncludeWorkspaceInSnapshot(e.target.checked)}
+              />
+              Include workspace files in snapshot
+            </label>
+          )}
           {(sessions.data ?? []).map((session) => (
             <div
               key={session.id}
@@ -220,6 +234,7 @@ export function SessionPanel() {
                         createSnapshot.mutate({
                           sessionId: session.id,
                           stopSession: false,
+                          includeWorkspace: includeWorkspaceInSnapshot,
                         })
                       }
                     >
@@ -242,6 +257,7 @@ export function SessionPanel() {
                         createSnapshot.mutate({
                           sessionId: session.id,
                           stopSession: true,
+                          includeWorkspace: includeWorkspaceInSnapshot,
                         })
                       }
                     >

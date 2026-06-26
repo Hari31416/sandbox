@@ -55,7 +55,7 @@ export function SnapshotsPanel() {
         <CardDescription>
           {snapshots.isLoading
             ? "Loading…"
-            : `${snapshots.data?.length ?? 0} saved VM disk state(s)`}
+            : `${snapshots.data?.length ?? 0} saved snapshot(s)`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -69,7 +69,11 @@ export function SnapshotsPanel() {
                   {snapshot.digest.slice(0, 16)}…
                 </p>
                 <p className="mt-1 text-muted-foreground">
-                  {formatBytes(snapshot.size_bytes)} ·{" "}
+                  {formatBytes(snapshot.size_bytes)} VM
+                  {snapshot.include_workspace
+                    ? ` · ${formatBytes(snapshot.workspace_bytes)} workspace`
+                    : " · no workspace files"}
+                  {" · "}
                   {new Date(snapshot.created_at).toLocaleString()}
                 </p>
                 {snapshot.source_session_id && (

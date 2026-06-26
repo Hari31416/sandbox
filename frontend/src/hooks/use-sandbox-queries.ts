@@ -196,14 +196,17 @@ export function useCreateSnapshot() {
       sessionId,
       name,
       stopSession,
+      includeWorkspace,
     }: {
       sessionId: string
       name?: string
       stopSession?: boolean
+      includeWorkspace?: boolean
     }) =>
       client.createSnapshot(sessionId, {
         name,
         stop_session: stopSession,
+        include_workspace: includeWorkspace,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["sandbox", "snapshots"] })

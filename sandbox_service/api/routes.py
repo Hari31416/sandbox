@@ -36,6 +36,12 @@ from sandbox_service.path_guard import PathEscapeError, resolve_host_path, sha25
 from sandbox_service.repositories import SessionRecord, SnapshotRecord
 from sandbox_service.runtime import get_runtime
 from sandbox_service.runtime.local import build_sandbox_name
+from sandbox_service.snapshot_workspace import (
+    archive_workspace,
+    remove_workspace_archive,
+    restore_workspace,
+    workspace_archive_path,
+)
 from sandbox_service.workspace import ensure_workspace, list_workspace_entries, remove_workspace
 
 
@@ -97,6 +103,8 @@ def _snapshot_response(record: SnapshotRecord) -> SnapshotResponse:
         digest=record.digest,
         image_ref=record.image_ref,
         size_bytes=record.size_bytes,
+        include_workspace=record.include_workspace,
+        workspace_bytes=record.workspace_bytes,
         metadata=record.metadata,
         created_at=record.created_at,
     )
@@ -195,6 +203,15 @@ async def create_session(
         ttl_seconds=state.settings.session_ttl_seconds,
     )
     root_path = str(ensure_workspace(state.settings.resolved_scratch_root, session.id))
+    if (
+        snapshot_record is not None
+        and snapshot_record.include_workspace
+        and snapshot_record.workspace_archive_path
+    ):
+        restore_workspace(
+            archive_path=Path(snapshot_record.workspace_archive_path),
+            workspace_path=Path(root_path),
+        )
     sandbox_name = build_sandbox_name(session.id) if backend_name == "microsandbox" else None
     await runtime.create_session(
         session_id=session.id,
@@ -332,8 +349,25 @@ async def create_snapshot(
         digest=info.digest,
         image_ref=info.image_ref,
         size_bytes=info.size_bytes,
+        include_workspace=body.include_workspace,
+        workspace_bytes=0,
+        workspace_archive_path=None,
         metadata=body.metadata,
     )
+    if body.include_workspace and session.root_path:
+        archive_path = workspace_archive_path(
+            state.settings.resolved_snapshots_root,
+            record.id,
+        )
+        workspace_bytes = archive_workspace(
+            workspace_path=Path(session.root_path),
+            destination=archive_path,
+        )
+        record = state.snapshots.update_workspace_bundle(
+            record.id,
+            workspace_bytes=workspace_bytes,
+            workspace_archive_path=str(archive_path),
+        )
     return _snapshot_response(record)
 
 
@@ -376,6 +410,8 @@ async def delete_snapshot(
             await runtime.delete_snapshot(msb_name=record.msb_name)
         except Exception:
             pass
+    if record.workspace_archive_path:
+        remove_workspace_archive(Path(record.workspace_archive_path))
     state.snapshots.delete(snapshot_id)
     return Response(status_code=204)
 

@@ -34,6 +34,7 @@ class CreateSnapshotRequest(BaseModel):
     name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     stop_session: bool = True
+    include_workspace: bool = True
 
 
 class SnapshotResponse(BaseModel):
@@ -44,6 +45,8 @@ class SnapshotResponse(BaseModel):
     digest: str
     image_ref: str
     size_bytes: int
+    include_workspace: bool
+    workspace_bytes: int
     metadata: dict[str, Any]
     created_at: datetime
 

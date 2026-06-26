@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 import pytest
@@ -246,6 +247,7 @@ async def test_create_snapshot_on_stopped_session(mock_msb_client):
     assert body["name"] == "my-snapshot"
     assert body["digest"] == "digest-my-snapshot"
     assert body["source_session_id"] == session["id"]
+    assert body["include_workspace"] is True
     assert len(fake_runtime.snapshots_created) == 1
 
     listed = await client.get("/v1/snapshots", params={"workspace_id": "ws_msb"})
@@ -320,6 +322,78 @@ async def test_create_session_from_snapshot(mock_msb_client):
     restored = restore.json()
     assert restored["backend"] == "microsandbox"
     assert restored["image"] == "python:3.12"
+    assert fake_runtime.sessions_created[-1]["snapshot"] == created.json()["name"]
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_with_workspace_files(mock_msb_client, tmp_path):
+    client, _fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+    workspace = Path(session["root_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "notes.txt").write_text("checkpoint\n")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"include_workspace": True},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["include_workspace"] is True
+    assert body["workspace_bytes"] > 0
+
+    archive = (
+        tmp_path / "snapshot-workspaces" / body["id"] / "workspace.tar.gz"
+    )
+    assert archive.exists()
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_without_workspace_files(mock_msb_client, tmp_path):
+    client, _fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+    workspace = Path(session["root_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "notes.txt").write_text("checkpoint\n")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"include_workspace": False},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["include_workspace"] is False
+    assert body["workspace_bytes"] == 0
+
+    archive_dir = tmp_path / "snapshot-workspaces" / body["id"]
+    assert not archive_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_restore_session_from_snapshot_with_workspace_files(mock_msb_client):
+    client, fake_runtime = mock_msb_client
+    session = await _create_microsandbox_session(client, status="stopped")
+    workspace = Path(session["root_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "main.py").write_text("print('resume')\n")
+
+    created = await client.post(
+        f"/v1/sessions/{session['id']}/snapshots",
+        json={"include_workspace": True},
+    )
+    snapshot_id = created.json()["id"]
+
+    restore = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": "ws_msb",
+            "snapshot_id": snapshot_id,
+            "limits": {"network": "disabled"},
+        },
+    )
+    assert restore.status_code == 201
+    restored_workspace = Path(restore.json()["root_path"])
+    assert (restored_workspace / "main.py").read_text() == "print('resume')\n"
     assert fake_runtime.sessions_created[-1]["snapshot"] == created.json()["name"]
 
 
