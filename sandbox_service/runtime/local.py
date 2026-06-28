@@ -7,9 +7,44 @@ import shlex
 from pathlib import Path
 
 from sandbox_service.models import SessionLimits
-from sandbox_service.path_guard import normalize_sandbox_path
+from sandbox_service.path_guard import (
+    normalize_sandbox_path,
+    rewrite_guest_workspace_command,
+)
 from sandbox_service.runtime.base import ExecResult, SandboxRuntime, SnapshotInfo
 from sandbox_service.workspace import ensure_workspace
+
+
+def _isolated_exec_env(workdir: Path, extra: dict[str, str]) -> dict[str, str]:
+    """Build a minimal subprocess environment for local sandbox exec."""
+    tmpdir = workdir / ".tmp"
+    tmpdir.mkdir(parents=True, exist_ok=True)
+
+    if "PATH" in extra:
+        sandbox_path = extra["PATH"]
+    else:
+        host_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        filtered = [
+            part
+            for part in host_path.split(":")
+            if part and "/opt/homebrew" not in part and "/homebrew/" not in part.lower()
+        ]
+        sandbox_path = ":".join(filtered) if filtered else "/usr/bin:/bin"
+
+    venv_bin = workdir / ".venv" / "bin"
+    if venv_bin.is_dir() and "PATH" not in extra:
+        sandbox_path = f"{venv_bin}:{sandbox_path}"
+
+    return {
+        "HOME": str(workdir),
+        "PWD": str(workdir),
+        "TMPDIR": str(tmpdir),
+        "PATH": sandbox_path,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        **extra,
+    }
 
 
 def build_sandbox_name(session_id: str) -> str:
@@ -72,9 +107,10 @@ class LocalRuntime:
         workspace = Path(root_path)
         normalized_cwd = normalize_sandbox_path(cwd)
         workdir = workspace if not normalized_cwd else (workspace / normalized_cwd).resolve()
-        env_vars = {**os.environ, **env, "HOME": str(workdir)}
+        rewritten_command = rewrite_guest_workspace_command(command)
+        env_vars = _isolated_exec_env(workdir, env)
         process = await asyncio.create_subprocess_shell(
-            command,
+            rewritten_command,
             cwd=str(workdir),
             env=env_vars,
             stdout=asyncio.subprocess.PIPE,

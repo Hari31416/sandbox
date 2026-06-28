@@ -12,6 +12,7 @@ export BACKEND_PORT := "8787"
 export FRONTEND_PORT := "5173"
 export SANDBOX_HOST := "0.0.0.0"
 export SANDBOX_PORT := BACKEND_PORT
+export SANDBOX_DEFAULT_BACKEND := "microsandbox"
 export VITE_BACKEND_PORT := BACKEND_PORT
 
 default:

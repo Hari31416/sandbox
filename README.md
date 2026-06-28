@@ -65,7 +65,7 @@ All settings use the `SANDBOX_` prefix (see `sandbox_service/config.py`).
 
 | Variable                        | Default              | Description                         |
 | ------------------------------- | -------------------- | ----------------------------------- |
-| `SANDBOX_DEFAULT_BACKEND`       | `local`              | `local` or `microsandbox`           |
+| `SANDBOX_DEFAULT_BACKEND`       | `microsandbox`       | `microsandbox` (isolated VM) or `local` (host subprocess, dev only) |
 | `SANDBOX_DEFAULT_IMAGE`         | `python:3.12`        | OCI image for new sessions          |
 | `SANDBOX_DATA_DIR`              | `~/.nexus-sandbox`   | Root for SQLite, scratch, artifacts |
 | `SANDBOX_HOST` / `SANDBOX_PORT` | `127.0.0.1` / `8787` | API bind address                    |

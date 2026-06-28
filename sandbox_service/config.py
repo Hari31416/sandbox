@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     snapshots_root: Path | None = None
     exec_logs_root: Path | None = None
 
-    default_backend: str = "local"
+    default_backend: str = "microsandbox"
     default_image: str = "python:3.12"
     guest_workspace_path: str = "/workspace"
 
