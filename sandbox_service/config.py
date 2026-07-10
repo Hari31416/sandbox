@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     exec_logs_root: Path | None = None
 
     default_backend: str = "microsandbox"
-    default_image: str = "python:3.12"
+    default_image: str = "hari31416/data-science-heavy-runtime:py312-v2"
     guest_workspace_path: str = "/workspace"
 
     session_ttl_seconds: int = 3600
