@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from pathlib import Path
-from time import perf_counter
 
 from microsandbox import Sandbox, Snapshot, Volume, is_installed
 from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
@@ -11,8 +10,7 @@ from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
 from sandbox_service.models import SessionLimits
 from sandbox_service.policies import build_network
 from sandbox_service.runtime.base import ExecResult, SnapshotInfo
-from sandbox_service.runtime.local import build_shell_command, guest_cwd
-from sandbox_service.workspace import ensure_workspace
+from sandbox_service.runtime.local import build_shell_command
 
 
 class MicrosandboxRuntime:
@@ -102,7 +100,9 @@ class MicrosandboxRuntime:
         if not self.is_available():
             raise RuntimeError("microsandbox runtime is not installed")
 
-        ensure_workspace(self._scratch_root, session_id)
+        # Bind-mount source must exist before VM create; use root_path (not
+        # session_id) so exec re-attach does not create a spurious scratch dir.
+        Path(root_path).mkdir(parents=True, exist_ok=True)
         existing = self._sandboxes.get(sandbox_name)
         if existing is not None:
             return
@@ -146,7 +146,10 @@ class MicrosandboxRuntime:
     async def list_sandboxes(self) -> list[str]:
         if not self.is_available():
             return []
-        return [handle.name for handle in await Sandbox.list()]
+        try:
+            return [handle.name for handle in await Sandbox.list()]
+        except Exception:
+            return []
 
     async def create_snapshot(
         self,
@@ -227,7 +230,6 @@ class MicrosandboxRuntime:
         stderr_chunks: list[bytes] = []
         exit_code: int | None = None
         handle = None
-        started = perf_counter()
         try:
             handle = await sandbox.shell_stream(shell_command, env=env or None)
             async with asyncio.timeout(float(timeout_seconds)):
@@ -248,15 +250,21 @@ class MicrosandboxRuntime:
             if handle is not None:
                 with suppress(Exception):
                     await handle.kill()
-            return ExecResult(exit_code=124, stdout=b"", stderr=b"", timed_out=True)
+            # Drop cached handle so the next exec re-attaches cleanly after kill.
+            self._sandboxes.pop(sandbox_name, None)
+            timeout_note = b"command timed out\n"
+            return ExecResult(
+                exit_code=124,
+                stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
+                stderr=_truncate(timeout_note + b"".join(stderr_chunks), max_output_bytes),
+                timed_out=True,
+            )
         except Exception as exc:
             return ExecResult(
                 exit_code=1,
-                stdout=b"".join(stdout_chunks),
-                stderr=str(exc).encode("utf-8"),
+                stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
+                stderr=_truncate(str(exc).encode("utf-8"), max_output_bytes),
             )
-        finally:
-            _ = started
 
         stdout = _truncate(b"".join(stdout_chunks), max_output_bytes)
         stderr = _truncate(b"".join(stderr_chunks), max_output_bytes)

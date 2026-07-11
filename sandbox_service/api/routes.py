@@ -213,14 +213,19 @@ async def create_session(
             workspace_path=Path(root_path),
         )
     sandbox_name = build_sandbox_name(session.id) if backend_name == "microsandbox" else None
-    await runtime.create_session(
-        session_id=session.id,
-        sandbox_name=sandbox_name or session.id,
-        image=image,
-        root_path=root_path,
-        limits=body.limits,
-        snapshot=snapshot_record.msb_name if snapshot_record else None,
-    )
+    try:
+        await runtime.create_session(
+            session_id=session.id,
+            sandbox_name=sandbox_name or session.id,
+            image=image,
+            root_path=root_path,
+            limits=body.limits,
+            snapshot=snapshot_record.msb_name if snapshot_record else None,
+        )
+    except Exception:
+        remove_workspace(state.settings.resolved_scratch_root, session.id)
+        state.sessions.delete(session.id)
+        raise
     record = state.sessions.update_runtime_paths(
         session.id,
         root_path=root_path,
@@ -424,7 +429,13 @@ async def create_exec(
     _: AuthDep,
 ) -> ExecResponse:
     session = _get_active_session(state, session_id)
-    timeout = body.timeout_seconds or state.settings.default_exec_timeout_seconds
+    if not session.root_path or not Path(session.root_path).is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail="session_workspace_missing",
+        )
+    requested = body.timeout_seconds or state.settings.default_exec_timeout_seconds
+    timeout = max(1, min(requested, state.settings.max_exec_timeout_seconds))
     exec_logs = state.settings.resolved_exec_logs_root / session_id
     exec_logs.mkdir(parents=True, exist_ok=True)
     stdout_path = exec_logs / f"stdout_{datetime.now().timestamp()}.log"
@@ -438,17 +449,38 @@ async def create_exec(
         stderr_path=str(stderr_path),
     )
     runtime = get_runtime(state.runtimes, session.backend)
-    result = await runtime.exec_command(
-        sandbox_name=session.sandbox_name or session.id,
-        image=session.image,
-        root_path=session.root_path,
-        command=body.command,
-        cwd=body.cwd,
-        timeout_seconds=timeout,
-        env=body.env,
-        limits=session.limits,
-        max_output_bytes=state.settings.max_exec_output_bytes,
-    )
+    try:
+        result = await runtime.exec_command(
+            sandbox_name=session.sandbox_name or session.id,
+            image=session.image,
+            root_path=session.root_path,
+            command=body.command,
+            cwd=body.cwd,
+            timeout_seconds=timeout,
+            env=body.env,
+            limits=session.limits,
+            max_output_bytes=state.settings.max_exec_output_bytes,
+        )
+    except Exception as exc:
+        error_bytes = str(exc).encode("utf-8", errors="replace")
+        stdout_path.write_bytes(b"")
+        stderr_path.write_bytes(error_bytes)
+        finished = state.execs.finish(
+            record.id,
+            status="failed",
+            exit_code=1,
+        )
+        return ExecResponse(
+            id=finished.id,
+            session_id=finished.session_id,
+            command=finished.command,
+            cwd=finished.cwd,
+            status=finished.status,
+            exit_code=finished.exit_code,
+            started_at=finished.started_at,
+            finished_at=finished.finished_at,
+            timeout_seconds=finished.timeout_seconds,
+        )
     stdout_path.write_bytes(result.stdout)
     stderr_path.write_bytes(result.stderr)
     status_name = "timed_out" if result.timed_out else (

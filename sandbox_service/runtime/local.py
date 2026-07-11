@@ -77,6 +77,7 @@ class LocalRuntime:
     ) -> None:
         if snapshot is not None:
             raise NotImplementedError("local backend does not support snapshots")
+        Path(root_path).mkdir(parents=True, exist_ok=True)
         ensure_workspace(self._scratch_root, session_id)
 
     async def stop_session(self, *, sandbox_name: str) -> None:
@@ -105,8 +106,10 @@ class LocalRuntime:
         if snapshot is not None:
             raise NotImplementedError("local backend does not support snapshots")
         workspace = Path(root_path)
+        workspace.mkdir(parents=True, exist_ok=True)
         normalized_cwd = normalize_sandbox_path(cwd)
         workdir = workspace if not normalized_cwd else (workspace / normalized_cwd).resolve()
+        workdir.mkdir(parents=True, exist_ok=True)
         rewritten_command = rewrite_guest_workspace_command(command)
         env_vars = _isolated_exec_env(workdir, env)
         process = await asyncio.create_subprocess_shell(
@@ -122,17 +125,23 @@ class LocalRuntime:
             )
         except TimeoutError:
             process.kill()
-            await process.wait()
-            return ExecResult(exit_code=124, stdout=b"", stderr=b"", timed_out=True)
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5.0)
+            except TimeoutError:
+                await process.wait()
+                stdout, stderr = b"", b""
+            timeout_note = b"command timed out\n"
+            return ExecResult(
+                exit_code=124,
+                stdout=_truncate(stdout, max_output_bytes),
+                stderr=_truncate(timeout_note + stderr, max_output_bytes),
+                timed_out=True,
+            )
 
-        if len(stdout) > max_output_bytes:
-            stdout = stdout[:max_output_bytes]
-        if len(stderr) > max_output_bytes:
-            stderr = stderr[:max_output_bytes]
         return ExecResult(
             exit_code=process.returncode or 0,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=_truncate(stdout, max_output_bytes),
+            stderr=_truncate(stderr, max_output_bytes),
         )
 
     async def create_snapshot(
@@ -149,6 +158,12 @@ class LocalRuntime:
 
     async def list_snapshots(self) -> list[SnapshotInfo]:
         return []
+
+
+def _truncate(data: bytes, max_bytes: int) -> bytes:
+    if len(data) <= max_bytes:
+        return data
+    return data[:max_bytes]
 
 
 def guest_cwd(guest_workspace_path: str, cwd: str) -> str:

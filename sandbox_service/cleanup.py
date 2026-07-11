@@ -64,9 +64,16 @@ class CleanupLoop:
     async def _cleanup_expired_sessions(self) -> int:
         removed = 0
         for session in self._sessions.list_expired():
-            await self._stop_and_remove(session.id, session.backend, session.sandbox_name)
-            self._sessions.update_status(session.id, "expired")
-            removed += 1
+            try:
+                # _stop_and_remove deletes the DB row; do not update_status afterward.
+                await self._stop_and_remove(
+                    session.id, session.backend, session.sandbox_name
+                )
+                removed += 1
+            except Exception:
+                logger.exception(
+                    "failed to clean up expired sandbox session %s", session.id
+                )
         return removed
 
     def _cleanup_exec_logs(self) -> int:
@@ -87,9 +94,21 @@ class CleanupLoop:
         leases = self._sessions.list_sessions(status="active")
         known_names = {lease.sandbox_name for lease in leases if lease.sandbox_name}
         for runtime in self._runtimes.values():
-            for sandbox_name in await runtime.list_sandboxes():
+            try:
+                sandbox_names = await runtime.list_sandboxes()
+            except Exception:
+                logger.exception(
+                    "failed to list sandboxes for runtime %s", runtime.name
+                )
+                continue
+            for sandbox_name in sandbox_names:
                 if sandbox_name not in known_names:
-                    await runtime.delete_session(sandbox_name=sandbox_name)
+                    try:
+                        await runtime.delete_session(sandbox_name=sandbox_name)
+                    except Exception:
+                        logger.exception(
+                            "failed to delete orphan sandbox %s", sandbox_name
+                        )
 
         known_ids = {lease.id for lease in leases}
         if self._scratch_root.exists():
@@ -102,7 +121,9 @@ class CleanupLoop:
     ) -> None:
         runtime = self._runtimes.get(backend)
         if runtime is not None and sandbox_name:
-            await runtime.stop_session(sandbox_name=sandbox_name)
-            await runtime.delete_session(sandbox_name=sandbox_name)
+            with suppress(Exception):
+                await runtime.stop_session(sandbox_name=sandbox_name)
+            with suppress(Exception):
+                await runtime.delete_session(sandbox_name=sandbox_name)
         remove_workspace(self._scratch_root, session_id)
         self._sessions.delete(session_id)

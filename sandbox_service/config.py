@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     heartbeat_extend_seconds: int = 1800
     cleanup_interval_seconds: int = 60
     default_exec_timeout_seconds: int = 300
+    max_exec_timeout_seconds: int = 3600
     max_exec_output_bytes: int = 10 * 1024 * 1024
 
     @property

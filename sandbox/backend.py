@@ -123,9 +123,12 @@ class HttpSandboxBackend:
             timeout_seconds=timeout,
             env=env or {},
         )
+        # Allow the HTTP call to outlive the command timeout with a small buffer.
+        exec_timeout = float(timeout) + 30.0
         response = await self._client.post(
             f"/v1/sessions/{session_id}/execs",
             json=payload.model_dump(),
+            timeout=exec_timeout,
         )
         response.raise_for_status()
         return response.json()

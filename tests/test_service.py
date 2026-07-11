@@ -485,6 +485,123 @@ async def test_sync_artifacts_includes_workspace_root_files(client: httpx.AsyncC
 
 
 @pytest.mark.asyncio
+async def test_exec_timeout_marks_timed_out_and_preserves_partial_output(
+    client: httpx.AsyncClient,
+):
+    create = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": "ws_timeout",
+            "image": "python:3.12",
+            "backend": "local",
+            "limits": {"network": "disabled"},
+        },
+    )
+    assert create.status_code == 201
+    session_id = create.json()["id"]
+
+    exec_response = await client.post(
+        f"/v1/sessions/{session_id}/execs",
+        json={
+            "command": "python -c \"import time; print('before', flush=True); time.sleep(5)\"",
+            "cwd": "/workspace",
+            "timeout_seconds": 1,
+        },
+    )
+    assert exec_response.status_code == 200
+    payload = exec_response.json()
+    assert payload["status"] == "timed_out"
+    assert payload["exit_code"] == 124
+    assert payload["timeout_seconds"] == 1
+
+    stderr = await client.get(f"/v1/sessions/{session_id}/execs/{payload['id']}/stderr")
+    assert stderr.status_code == 200
+    assert b"timed out" in stderr.content
+
+    await client.delete(f"/v1/sessions/{session_id}")
+
+
+@pytest.mark.asyncio
+async def test_exec_timeout_is_clamped_to_max(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SANDBOX_MAX_EXEC_TIMEOUT_SECONDS", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    app = create_app()
+    app.state.sandbox = build_app_state(settings)
+
+    @asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
+    app.router.lifespan_context = noop_lifespan
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+        create = await http_client.post(
+            "/v1/sessions",
+            json={
+                "workspace_id": "ws_clamp",
+                "image": "python:3.12",
+                "backend": "local",
+                "limits": {"network": "disabled"},
+            },
+        )
+        session_id = create.json()["id"]
+        exec_response = await http_client.post(
+            f"/v1/sessions/{session_id}/execs",
+            json={
+                "command": "python -c \"import time; time.sleep(10)\"",
+                "timeout_seconds": 9999,
+            },
+        )
+        assert exec_response.status_code == 200
+        payload = exec_response.json()
+        assert payload["timeout_seconds"] == 2
+        assert payload["status"] == "timed_out"
+        await http_client.delete(f"/v1/sessions/{session_id}")
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_sessions_does_not_raise_after_delete(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SANDBOX_SESSION_TTL_SECONDS", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    state = build_app_state(settings)
+    state.runtimes["microsandbox"] = FakeMicrosandboxRuntime()
+
+    session = state.sessions.create(
+        workspace_id="ws_expired",
+        run_id=None,
+        image="python:3.12",
+        backend="local",
+        root_path=str(tmp_path / "scratch" / "sess_test" / "workspace"),
+        sandbox_name=None,
+        limits=SessionLimits(),
+        metadata={},
+        ttl_seconds=0,
+    )
+    (tmp_path / "scratch" / session.id / "workspace").mkdir(parents=True, exist_ok=True)
+    state.sessions.update_runtime_paths(
+        session.id,
+        root_path=str(tmp_path / "scratch" / session.id / "workspace"),
+        sandbox_name=None,
+    )
+
+    removed, _ = await state.cleanup.run_once()
+    assert removed >= 1
+    with pytest.raises(KeyError):
+        state.sessions.get(session.id)
+    # Second pass must also succeed (no KeyError from update_status-after-delete).
+    removed_again, _ = await state.cleanup.run_once()
+    assert removed_again == 0
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_http_backend_adapter(tmp_path, monkeypatch):
     monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
