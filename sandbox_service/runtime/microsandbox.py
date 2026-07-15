@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from microsandbox import Sandbox, Snapshot, Volume, is_installed
 from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
@@ -12,6 +14,12 @@ from sandbox_service.policies import build_network
 from sandbox_service.runtime.base import ExecResult, SnapshotInfo
 from sandbox_service.runtime.local import build_shell_command
 
+logger = logging.getLogger(__name__)
+
+_STOP_TIMEOUT_SECONDS = 10.0
+_KILL_TIMEOUT_SECONDS = 10.0
+_EXEC_KILL_TIMEOUT_SECONDS = 5.0
+
 
 class MicrosandboxRuntime:
     name = "microsandbox"
@@ -20,6 +28,7 @@ class MicrosandboxRuntime:
         self._scratch_root = scratch_root
         self._guest_workspace_path = guest_workspace_path
         self._sandboxes: dict[str, Sandbox] = {}
+        self._active_execs: dict[str, Any] = {}
 
     def is_available(self) -> bool:
         return is_installed()
@@ -75,17 +84,53 @@ class MicrosandboxRuntime:
                 raise RuntimeError(f"sandbox not found: {sandbox_name}") from None
             return handle
 
+    async def _kill_active_exec(self, sandbox_name: str) -> None:
+        handle = self._active_execs.pop(sandbox_name, None)
+        if handle is None:
+            return
+        with suppress(Exception):
+            await asyncio.wait_for(handle.kill(), timeout=_EXEC_KILL_TIMEOUT_SECONDS)
+
+    async def _force_stop_connected(self, sandbox: Sandbox, sandbox_name: str) -> None:
+        try:
+            await asyncio.wait_for(sandbox.stop_and_wait(), timeout=_STOP_TIMEOUT_SECONDS)
+            return
+        except Exception:
+            logger.warning(
+                "graceful stop timed out or failed for sandbox %s; forcing kill",
+                sandbox_name,
+                exc_info=True,
+            )
+        try:
+            await asyncio.wait_for(sandbox.kill(), timeout=_KILL_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("forced kill failed for sandbox %s", sandbox_name)
+
     async def _ensure_sandbox_stopped(self, sandbox_name: str) -> None:
+        await self._kill_active_exec(sandbox_name)
         connected = self._sandboxes.pop(sandbox_name, None)
         if connected is not None:
-            await connected.stop_and_wait()
+            await self._force_stop_connected(connected, sandbox_name)
             return
 
-        handle = await self._get_sandbox_handle(sandbox_name)
+        try:
+            handle = await self._get_sandbox_handle(sandbox_name)
+        except RuntimeError:
+            return
         status = str(handle.status).lower()
-        if status in {"running", "paused"}:
-            await handle.stop()
-            await handle.wait_until_stopped()
+        if status not in {"running", "paused"}:
+            return
+        try:
+            await asyncio.wait_for(handle.stop(), timeout=_STOP_TIMEOUT_SECONDS)
+            await asyncio.wait_for(handle.wait_until_stopped(), timeout=_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning(
+                "catalog stop failed for sandbox %s; forcing kill",
+                sandbox_name,
+                exc_info=True,
+            )
+            with suppress(Exception):
+                await asyncio.wait_for(handle.kill(), timeout=_KILL_TIMEOUT_SECONDS)
 
     async def create_session(
         self,
@@ -128,6 +173,7 @@ class MicrosandboxRuntime:
         await self._ensure_sandbox_stopped(sandbox_name)
 
     async def delete_session(self, *, sandbox_name: str) -> None:
+        await self._kill_active_exec(sandbox_name)
         sandbox = self._sandboxes.pop(sandbox_name, None)
         if sandbox is not None:
             await self._stop_and_remove(sandbox, sandbox_name)
@@ -138,10 +184,12 @@ class MicrosandboxRuntime:
         if handle is None:
             return
         try:
-            await handle.stop()
+            await asyncio.wait_for(handle.stop(), timeout=_STOP_TIMEOUT_SECONDS)
         except Exception:
-            await handle.kill()
-        await handle.remove()
+            with suppress(Exception):
+                await asyncio.wait_for(handle.kill(), timeout=_KILL_TIMEOUT_SECONDS)
+        with suppress(Exception):
+            await handle.remove()
 
     async def list_sandboxes(self) -> list[str]:
         if not self.is_available():
@@ -231,25 +279,32 @@ class MicrosandboxRuntime:
         exit_code: int | None = None
         handle = None
         try:
-            handle = await sandbox.shell_stream(shell_command, env=env or None)
-            async with asyncio.timeout(float(timeout_seconds)):
+            # Pass timeout to the SDK as well as asyncio.timeout: native
+            # iterators can ignore CancelledError, leaving guest/CPU stuck.
+            handle = await sandbox.shell_stream(
+                shell_command,
+                env=env or None,
+                timeout=float(timeout_seconds),
+            )
+            self._active_execs[sandbox_name] = handle
+            async with asyncio.timeout(float(timeout_seconds) + 5.0):
                 async for event in handle:
-                    if isinstance(event, StdoutEvent):
-                        stdout_chunks.append(event.data)
-                    elif isinstance(event, StderrEvent):
-                        stderr_chunks.append(event.data)
-                    elif isinstance(event, ExitedEvent):
-                        exit_code = event.code
-                    elif getattr(event, "event_type", None) == "stdout" and event.data:
-                        stdout_chunks.append(event.data)
-                    elif getattr(event, "event_type", None) == "stderr" and event.data:
-                        stderr_chunks.append(event.data)
-                    elif getattr(event, "event_type", None) == "exited":
-                        exit_code = event.code if event.code is not None else 1
+                    kind = _exec_event_kind(event)
+                    data = getattr(event, "data", None)
+                    if kind == "stdout" and data:
+                        stdout_chunks.append(data)
+                    elif kind == "stderr" and data:
+                        stderr_chunks.append(data)
+                    elif kind == "exited":
+                        code = getattr(event, "code", None)
+                        exit_code = code if code is not None else 1
         except TimeoutError:
             if handle is not None:
                 with suppress(Exception):
-                    await handle.kill()
+                    await asyncio.wait_for(
+                        handle.kill(),
+                        timeout=_EXEC_KILL_TIMEOUT_SECONDS,
+                    )
             # Drop cached handle so the next exec re-attaches cleanly after kill.
             self._sandboxes.pop(sandbox_name, None)
             timeout_note = b"command timed out\n"
@@ -265,6 +320,9 @@ class MicrosandboxRuntime:
                 stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
                 stderr=_truncate(str(exc).encode("utf-8"), max_output_bytes),
             )
+        finally:
+            if self._active_execs.get(sandbox_name) is handle:
+                self._active_execs.pop(sandbox_name, None)
 
         stdout = _truncate(b"".join(stdout_chunks), max_output_bytes)
         stderr = _truncate(b"".join(stderr_chunks), max_output_bytes)
@@ -275,11 +333,27 @@ class MicrosandboxRuntime:
         )
 
     async def _stop_and_remove(self, sandbox: Sandbox, sandbox_name: str) -> None:
-        try:
-            await sandbox.stop_and_wait()
-        except Exception:
-            await sandbox.kill()
-        await Sandbox.remove(sandbox_name)
+        await self._force_stop_connected(sandbox, sandbox_name)
+        with suppress(Exception):
+            await Sandbox.remove(sandbox_name)
+
+
+def _exec_event_kind(event: object) -> str | None:
+    """Normalize SDK exec events.
+
+    microsandbox 0.5.10 yields builtin ``ExecEvent`` objects where
+    ``isinstance(..., StdoutEvent)`` is False; prefer ``event_type``.
+    """
+    event_type = getattr(event, "event_type", None)
+    if isinstance(event_type, str) and event_type:
+        return event_type
+    if isinstance(event, StdoutEvent):
+        return "stdout"
+    if isinstance(event, StderrEvent):
+        return "stderr"
+    if isinstance(event, ExitedEvent):
+        return "exited"
+    return None
 
 
 def _truncate(data: bytes, max_bytes: int) -> bytes:
