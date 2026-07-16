@@ -12,6 +12,7 @@ from sandbox_service.path_guard import (
     rewrite_guest_workspace_command,
 )
 from sandbox_service.runtime.base import ExecResult, SandboxRuntime, SnapshotInfo
+from sandbox_service.runtime.exec_env import local_default_exec_env, merge_exec_env
 from sandbox_service.workspace import ensure_workspace
 
 
@@ -35,16 +36,16 @@ def _isolated_exec_env(workdir: Path, extra: dict[str, str]) -> dict[str, str]:
     if venv_bin.is_dir() and "PATH" not in extra:
         sandbox_path = f"{venv_bin}:{sandbox_path}"
 
-    return {
+    defaults = {
+        **local_default_exec_env(workdir),
         "HOME": str(workdir),
         "PWD": str(workdir),
         "TMPDIR": str(tmpdir),
         "PATH": sandbox_path,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "PYTHONNOUSERSITE": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        **extra,
     }
+    return merge_exec_env(extra, defaults=defaults)
 
 
 def build_sandbox_name(session_id: str) -> str:
@@ -116,6 +117,7 @@ class LocalRuntime:
             rewritten_command,
             cwd=str(workdir),
             env=env_vars,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

@@ -8,10 +8,12 @@ from typing import Any
 
 from microsandbox import Sandbox, Snapshot, Volume, is_installed
 from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
+from microsandbox.types import Stdin
 
 from sandbox_service.models import SessionLimits
 from sandbox_service.policies import build_network
 from sandbox_service.runtime.base import ExecResult, SnapshotInfo
+from sandbox_service.runtime.exec_env import GUEST_DEFAULT_EXEC_ENV, merge_exec_env
 from sandbox_service.runtime.local import build_shell_command
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ class MicrosandboxRuntime:
             "cpus": limits.cpu,
             "workdir": self._guest_workspace_path,
             "replace": True,
-            "env": {"PYTHONUNBUFFERED": "1"},
+            "env": dict(GUEST_DEFAULT_EXEC_ENV),
             "volumes": {
                 self._guest_workspace_path: Volume.bind(root_path),
             },
@@ -268,11 +270,12 @@ class MicrosandboxRuntime:
             snapshot=snapshot,
         )
         sandbox = self._sandboxes[sandbox_name]
+        exec_env = merge_exec_env(env)
         shell_command = build_shell_command(
             guest_workspace_path=self._guest_workspace_path,
             command=command,
             cwd=cwd,
-            env=env,
+            env=exec_env,
         )
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
@@ -281,10 +284,12 @@ class MicrosandboxRuntime:
         try:
             # Pass timeout to the SDK as well as asyncio.timeout: native
             # iterators can ignore CancelledError, leaving guest/CPU stuck.
+            # Stdin.null() prevents interactive/GUI probes from blocking forever.
             handle = await sandbox.shell_stream(
                 shell_command,
-                env=env or None,
+                env=exec_env,
                 timeout=float(timeout_seconds),
+                stdin=Stdin.null(),
             )
             self._active_execs[sandbox_name] = handle
             async with asyncio.timeout(float(timeout_seconds) + 5.0):
@@ -298,6 +303,9 @@ class MicrosandboxRuntime:
                     elif kind == "exited":
                         code = getattr(event, "code", None)
                         exit_code = code if code is not None else 1
+                        # Exited is terminal; do not keep iterating the native
+                        # stream (can busy-spin / hold msb at 100% CPU).
+                        break
         except TimeoutError:
             if handle is not None:
                 with suppress(Exception):

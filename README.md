@@ -5,7 +5,8 @@ Standalone compute-plane service for isolated code execution: session lifecycle,
 ## Features
 
 - **Sessions** — create, stop, heartbeat, and TTL-based cleanup
-- **Execution** — run shell commands with timeouts and captured stdout/stderr
+- **Execution** — run shell commands with timeouts and captured stdout/stderr;
+  headless defaults (`MPLBACKEND=Agg`, closed stdin) so plot scripts do not hang
 - **Filesystem** — read, write, list, upload/download archives under `/workspace`
 - **Artifacts** — sync workspace paths to a local artifact store
 - **Snapshots** (microsandbox) — save VM disk state, optionally bundle workspace files to resume later
