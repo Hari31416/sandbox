@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     guest_workspace_path: str = "/workspace"
 
     session_ttl_seconds: int = 3600
+    max_active_sessions: int = Field(
+        default=32,
+        ge=0,
+        description=(
+            "Platform-wide cap on concurrent active sandbox sessions. "
+            "0 disables the cap."
+        ),
+    )
     heartbeat_extend_seconds: int = 1800
     cleanup_interval_seconds: int = 60
     default_exec_timeout_seconds: int = 300

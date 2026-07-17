@@ -6,7 +6,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from microsandbox import Sandbox, Snapshot, Volume, is_installed
+from microsandbox import Image, Sandbox, Snapshot, Volume, is_installed
 from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
 from microsandbox.types import Stdin
 
@@ -60,11 +60,14 @@ class MicrosandboxRuntime:
                 self._guest_workspace_path: Volume.bind(root_path),
             },
             "network": build_network(network_mode, allowed_hosts),
+            # Hard VM lifetime matching usage-policy sandbox_timeout_seconds.
+            "maxDurationSecs": max(1, int(limits.timeout_seconds)),
         }
         if snapshot is not None:
             config["snapshot"] = snapshot
         else:
-            config["image"] = image
+            # Writable OCI overlay size — enforces sandbox_disk_mb for rootfs writes.
+            config["image"] = Image.oci(image, upper_size_mib=max(512, int(limits.disk_mb)))
         return config
 
     async def _attach_existing_sandbox(self, sandbox_name: str) -> Sandbox:

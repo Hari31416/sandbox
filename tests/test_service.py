@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -48,6 +49,7 @@ class FakeMicrosandboxRuntime:
                 "image": image,
                 "root_path": root_path,
                 "snapshot": snapshot,
+                "limits": limits,
             }
         )
 
@@ -598,6 +600,93 @@ async def test_cleanup_expired_sessions_does_not_raise_after_delete(tmp_path, mo
     # Second pass must also succeed (no KeyError from update_status-after-delete).
     removed_again, _ = await state.cleanup.run_once()
     assert removed_again == 0
+    get_settings.cache_clear()
+
+
+def test_resolve_session_ttl_seconds() -> None:
+    from sandbox_service.api.routes import resolve_session_ttl_seconds
+
+    assert resolve_session_ttl_seconds(
+        limits_timeout_seconds=300, session_ttl_seconds=3600
+    ) == 300
+    assert resolve_session_ttl_seconds(
+        limits_timeout_seconds=7200, session_ttl_seconds=3600
+    ) == 3600
+    assert resolve_session_ttl_seconds(
+        limits_timeout_seconds=0, session_ttl_seconds=3600
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_ttl_honors_limits_timeout(mock_msb_client):
+    client, _runtime = mock_msb_client
+    create = await client.post(
+        "/v1/sessions",
+        json={
+            "workspace_id": "ws_ttl",
+            "run_id": "run_ttl",
+            "image": "python:3.12",
+            "backend": "microsandbox",
+            "limits": {"timeout_seconds": 120, "network": "disabled"},
+        },
+    )
+    assert create.status_code == 201
+    payload = create.json()
+    created = datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00"))
+    expires = datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
+    assert abs((expires - created).total_seconds() - 120) < 2
+    await client.delete(f"/v1/sessions/{payload['id']}")
+
+
+@pytest.mark.asyncio
+async def test_max_active_sessions_enforced(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SANDBOX_MAX_ACTIVE_SESSIONS", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    app = create_app()
+    state = build_app_state(settings)
+    state.runtimes["microsandbox"] = FakeMicrosandboxRuntime()
+    app.state.sandbox = state
+
+    @asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
+    app.router.lifespan_context = noop_lifespan
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+        first = await http_client.post(
+            "/v1/sessions",
+            json={
+                "workspace_id": "ws_cap",
+                "backend": "microsandbox",
+                "limits": {"network": "disabled"},
+            },
+        )
+        assert first.status_code == 201
+        second = await http_client.post(
+            "/v1/sessions",
+            json={
+                "workspace_id": "ws_cap2",
+                "backend": "microsandbox",
+                "limits": {"network": "disabled"},
+            },
+        )
+        assert second.status_code == 429
+        assert second.json()["detail"] == "max_active_sessions_exceeded"
+        await http_client.delete(f"/v1/sessions/{first.json()['id']}")
+        third = await http_client.post(
+            "/v1/sessions",
+            json={
+                "workspace_id": "ws_cap3",
+                "backend": "microsandbox",
+                "limits": {"network": "disabled"},
+            },
+        )
+        assert third.status_code == 201
+        await http_client.delete(f"/v1/sessions/{third.json()['id']}")
     get_settings.cache_clear()
 
 

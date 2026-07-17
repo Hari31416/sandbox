@@ -169,9 +169,24 @@ class SessionRepository:
             ).fetchall()
         return [_row_to_session(row) for row in rows]
 
+    def count_active(self) -> int:
+        with get_connection(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM sandbox_sessions WHERE status = 'active'"
+            ).fetchone()
+        return int(row["n"] if row is not None else 0)
+
     def heartbeat(self, session_id: str, extend_seconds: int) -> SessionRecord:
+        record = self.get(session_id)
         now = _utcnow()
-        expires_at = now + timedelta(seconds=extend_seconds)
+        proposed = now + timedelta(seconds=max(1, extend_seconds))
+        # Never extend past the policy/session lifetime from create.
+        max_expires = record.created_at + timedelta(
+            seconds=max(1, int(record.limits.timeout_seconds))
+        )
+        expires_at = min(proposed, max_expires)
+        if expires_at < now:
+            expires_at = now
         with get_connection(self._db_path) as conn:
             conn.execute(
                 """

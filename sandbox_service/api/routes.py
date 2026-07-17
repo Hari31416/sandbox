@@ -45,6 +45,15 @@ from sandbox_service.snapshot_workspace import (
 from sandbox_service.workspace import ensure_workspace, list_workspace_entries, remove_workspace
 
 
+def resolve_session_ttl_seconds(
+    *,
+    limits_timeout_seconds: int,
+    session_ttl_seconds: int,
+) -> int:
+    """Session lease TTL: honor policy timeout, capped by service ceiling."""
+    return max(1, min(int(limits_timeout_seconds), int(session_ttl_seconds)))
+
+
 router = APIRouter()
 
 
@@ -191,6 +200,16 @@ async def create_session(
         if snapshot_record
         else (body.image or state.settings.default_image)
     )
+    max_active = int(state.settings.max_active_sessions)
+    if max_active > 0 and state.sessions.count_active() >= max_active:
+        raise HTTPException(
+            status_code=429,
+            detail="max_active_sessions_exceeded",
+        )
+    ttl_seconds = resolve_session_ttl_seconds(
+        limits_timeout_seconds=body.limits.timeout_seconds,
+        session_ttl_seconds=state.settings.session_ttl_seconds,
+    )
     session = state.sessions.create(
         workspace_id=body.workspace_id,
         run_id=body.run_id,
@@ -200,7 +219,7 @@ async def create_session(
         sandbox_name=None,
         limits=body.limits,
         metadata=body.metadata,
-        ttl_seconds=state.settings.session_ttl_seconds,
+        ttl_seconds=ttl_seconds,
     )
     root_path = str(ensure_workspace(state.settings.resolved_scratch_root, session.id))
     if (
