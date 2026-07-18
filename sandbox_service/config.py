@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8787
     auth_token: str | None = None
+    deploy_profile: str = Field(
+        default="local",
+        description=(
+            "Deploy profile (SANDBOX_DEPLOY_PROFILE): local | demo | staging | "
+            "saas-prod | selfhost. Secure profiles require SANDBOX_AUTH_TOKEN."
+        ),
+    )
 
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".nexus-sandbox")
     sqlite_path: Path | None = None
