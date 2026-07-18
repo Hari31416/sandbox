@@ -9,95 +9,95 @@ importers:
   .:
     dependencies:
       '@fontsource-variable/inter':
-        specifier: ^5.2.8
+        specifier: 5.2.8
         version: 5.2.8
       '@fontsource-variable/jetbrains-mono':
-        specifier: ^5.2.8
+        specifier: 5.2.8
         version: 5.2.8
       '@fontsource/dm-sans':
-        specifier: ^5.2.8
+        specifier: 5.2.8
         version: 5.2.8
       '@tailwindcss/vite':
-        specifier: ^4
+        specifier: 4.3.1
         version: 4.3.1(vite@8.1.0(@types/node@24.13.2)(jiti@2.7.0))
       '@tanstack/react-query':
-        specifier: ^5.101.1
+        specifier: 5.101.1
         version: 5.101.1(react@19.2.7)
       class-variance-authority:
-        specifier: ^0.7.1
+        specifier: 0.7.1
         version: 0.7.1
       clsx:
-        specifier: ^2.1.1
+        specifier: 2.1.1
         version: 2.1.1
       lucide-react:
-        specifier: ^1.21.0
+        specifier: 1.21.0
         version: 1.21.0(react@19.2.7)
       radix-ui:
-        specifier: ^1.6.0
+        specifier: 1.6.0
         version: 1.6.0(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       react:
-        specifier: ^19.2.6
+        specifier: 19.2.7
         version: 19.2.7
       react-dom:
-        specifier: ^19.2.6
+        specifier: 19.2.7
         version: 19.2.7(react@19.2.7)
       shadcn:
-        specifier: ^4.11.0
+        specifier: 4.11.0
         version: 4.11.0(typescript@6.0.3)
       tailwind-merge:
-        specifier: ^3.6.0
+        specifier: 3.6.0
         version: 3.6.0
       tailwindcss:
-        specifier: ^4
+        specifier: 4.3.1
         version: 4.3.1
       tw-animate-css:
-        specifier: ^1.4.0
+        specifier: 1.4.0
         version: 1.4.0
       zustand:
-        specifier: ^5.0.14
+        specifier: 5.0.14
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
     devDependencies:
       '@eslint/js':
-        specifier: ^10
+        specifier: 10.0.1
         version: 10.0.1(eslint@10.5.0(jiti@2.7.0))
       '@types/node':
-        specifier: ^24
+        specifier: 24.13.2
         version: 24.13.2
       '@types/react':
-        specifier: ^19
+        specifier: 19.2.17
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19
+        specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
-        specifier: ^6
+        specifier: 6.0.3
         version: 6.0.3(vite@8.1.0(@types/node@24.13.2)(jiti@2.7.0))
       eslint:
-        specifier: ^10
+        specifier: 10.5.0
         version: 10.5.0(jiti@2.7.0)
       eslint-plugin-react-hooks:
-        specifier: ^7.1.1
+        specifier: 7.1.1
         version: 7.1.1(eslint@10.5.0(jiti@2.7.0))
       eslint-plugin-react-refresh:
-        specifier: ^0.5.2
+        specifier: 0.5.3
         version: 0.5.3(eslint@10.5.0(jiti@2.7.0))
       globals:
-        specifier: ^17
+        specifier: 17.7.0
         version: 17.7.0
       prettier:
-        specifier: ^3.8.3
+        specifier: 3.8.4
         version: 3.8.4
       prettier-plugin-tailwindcss:
-        specifier: ^0.8.0
+        specifier: 0.8.0
         version: 0.8.0(prettier@3.8.4)
       typescript:
-        specifier: ~6
+        specifier: 6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8
+        specifier: 8.62.0
         version: 8.62.0(eslint@10.5.0(jiti@2.7.0))(typescript@6.0.3)
       vite:
-        specifier: ^8
+        specifier: 8.1.0
         version: 8.1.0(@types/node@24.13.2)(jiti@2.7.0)
 
 packages:
