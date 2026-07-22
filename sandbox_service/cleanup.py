@@ -10,7 +10,6 @@ from sandbox_service.repositories import SessionRepository
 from sandbox_service.runtime import SandboxRuntime
 from sandbox_service.workspace import remove_workspace
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -90,9 +89,27 @@ class CleanupLoop:
                 removed += 1
         return removed
 
+    def _active_sandbox_names(self) -> set[str]:
+        return {
+            lease.sandbox_name
+            for lease in self._sessions.list_sessions(status="active")
+            if lease.sandbox_name
+        }
+
+    def _should_keep_scratch(self, session_id: str) -> bool:
+        """Return True when scratch still belongs to a live session lease.
+
+        Checked per candidate immediately before delete so a session created
+        during a long reconcile (e.g. while listing/deleting orphan VMs) is not
+        treated as an orphan from a stale active-id snapshot.
+        """
+        try:
+            session = self._sessions.get(session_id)
+        except KeyError:
+            return False
+        return session.status in {"active", "creating"}
+
     async def _reconcile_orphans(self) -> None:
-        leases = self._sessions.list_sessions(status="active")
-        known_names = {lease.sandbox_name for lease in leases if lease.sandbox_name}
         for runtime in self._runtimes.values():
             try:
                 sandbox_names = await runtime.list_sandboxes()
@@ -101,20 +118,27 @@ class CleanupLoop:
                     "failed to list sandboxes for runtime %s", runtime.name
                 )
                 continue
+            # Re-read after the potentially slow list so a session created
+            # mid-reconcile is not mistaken for an orphan VM.
+            known_names = self._active_sandbox_names()
             for sandbox_name in sandbox_names:
-                if sandbox_name not in known_names:
-                    try:
-                        await runtime.delete_session(sandbox_name=sandbox_name)
-                    except Exception:
-                        logger.exception(
-                            "failed to delete orphan sandbox %s", sandbox_name
-                        )
+                if sandbox_name in known_names:
+                    continue
+                try:
+                    await runtime.delete_session(sandbox_name=sandbox_name)
+                except Exception:
+                    logger.exception("failed to delete orphan sandbox %s", sandbox_name)
 
-        known_ids = {lease.id for lease in leases}
-        if self._scratch_root.exists():
-            for session_root in self._scratch_root.iterdir():
-                if session_root.is_dir() and session_root.name not in known_ids:
-                    remove_workspace(self._scratch_root, session_root.name)
+        if not self._scratch_root.exists():
+            return
+        # Snapshot iterdir first; decide keep/delete with a fresh DB read per
+        # directory so concurrent create_session cannot lose its workspace.
+        for session_root in list(self._scratch_root.iterdir()):
+            if not session_root.is_dir():
+                continue
+            if self._should_keep_scratch(session_root.name):
+                continue
+            remove_workspace(self._scratch_root, session_root.name)
 
     async def _stop_and_remove(
         self, session_id: str, backend: str, sandbox_name: str | None

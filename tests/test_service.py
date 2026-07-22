@@ -124,7 +124,9 @@ async def client(tmp_path, monkeypatch):
     app.router.lifespan_context = noop_lifespan
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         yield http_client
     get_settings.cache_clear()
 
@@ -148,7 +150,9 @@ async def mock_msb_client(tmp_path, monkeypatch):
     app.router.lifespan_context = noop_lifespan
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         yield http_client, fake_runtime
     get_settings.cache_clear()
 
@@ -200,7 +204,9 @@ async def client(tmp_path, monkeypatch):
     app.router.lifespan_context = noop_lifespan
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         yield http_client
     get_settings.cache_clear()
 
@@ -344,9 +350,7 @@ async def test_create_snapshot_with_workspace_files(mock_msb_client, tmp_path):
     assert body["include_workspace"] is True
     assert body["workspace_bytes"] > 0
 
-    archive = (
-        tmp_path / "snapshot-workspaces" / body["id"] / "workspace.tar.gz"
-    )
+    archive = tmp_path / "snapshot-workspaces" / body["id"] / "workspace.tar.gz"
     assert archive.exists()
 
 
@@ -539,7 +543,9 @@ async def test_exec_timeout_is_clamped_to_max(tmp_path, monkeypatch):
 
     app.router.lifespan_context = noop_lifespan
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         create = await http_client.post(
             "/v1/sessions",
             json={
@@ -553,7 +559,7 @@ async def test_exec_timeout_is_clamped_to_max(tmp_path, monkeypatch):
         exec_response = await http_client.post(
             f"/v1/sessions/{session_id}/execs",
             json={
-                "command": "python -c \"import time; time.sleep(10)\"",
+                "command": 'python -c "import time; time.sleep(10)"',
                 "timeout_seconds": 9999,
             },
         )
@@ -566,7 +572,9 @@ async def test_exec_timeout_is_clamped_to_max(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sessions_does_not_raise_after_delete(tmp_path, monkeypatch):
+async def test_cleanup_expired_sessions_does_not_raise_after_delete(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SANDBOX_SESSION_TTL_SECONDS", "1")
     get_settings.cache_clear()
@@ -603,18 +611,88 @@ async def test_cleanup_expired_sessions_does_not_raise_after_delete(tmp_path, mo
     get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+async def test_reconcile_orphans_preserves_scratch_created_during_list(
+    tmp_path, monkeypatch
+):
+    """Active session scratch must survive reconcile that started before create.
+
+    Reproduces the session_workspace_missing race: cleanup snapshots active
+    leases, then a new session creates its scratch while list_sandboxes is
+    slow; reconcile must not delete that live workspace.
+    """
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_database(settings.resolved_sqlite_path)
+    state = build_app_state(settings)
+
+    scratch_root = settings.resolved_scratch_root
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    orphan_id = "sess_orphan_scratch"
+    (scratch_root / orphan_id / "workspace").mkdir(parents=True)
+
+    created: dict[str, object] = {}
+
+    class SlowListRuntime(FakeMicrosandboxRuntime):
+        async def list_sandboxes(self) -> list[str]:
+            session = state.sessions.create(
+                workspace_id="ws_live",
+                run_id="run_live",
+                image="python:3.12",
+                backend="local",
+                root_path="",
+                sandbox_name="sbox-live",
+                limits=SessionLimits(),
+                metadata={},
+                ttl_seconds=300,
+            )
+            workspace = scratch_root / session.id / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+            marker = workspace / "staged.txt"
+            marker.write_text("keep-me", encoding="utf-8")
+            state.sessions.update_runtime_paths(
+                session.id,
+                root_path=str(workspace),
+                sandbox_name="sbox-live",
+            )
+            created["session_id"] = session.id
+            created["workspace"] = workspace
+            return []
+
+    # Mutate the shared registry CleanupLoop holds (do not rebind).
+    state.runtimes.clear()
+    state.runtimes["local"] = SlowListRuntime()
+    await state.cleanup._reconcile_orphans()
+
+    live_id = created["session_id"]
+    live_workspace = Path(created["workspace"])
+    assert state.sessions.get(live_id).status == "active"
+    assert live_workspace.is_dir()
+    assert (live_workspace / "staged.txt").read_text(encoding="utf-8") == "keep-me"
+    assert not (scratch_root / orphan_id).exists()
+    get_settings.cache_clear()
+
+
 def test_resolve_session_ttl_seconds() -> None:
     from sandbox_service.api.routes import resolve_session_ttl_seconds
 
-    assert resolve_session_ttl_seconds(
-        limits_timeout_seconds=300, session_ttl_seconds=3600
-    ) == 300
-    assert resolve_session_ttl_seconds(
-        limits_timeout_seconds=7200, session_ttl_seconds=3600
-    ) == 3600
-    assert resolve_session_ttl_seconds(
-        limits_timeout_seconds=0, session_ttl_seconds=3600
-    ) == 1
+    assert (
+        resolve_session_ttl_seconds(
+            limits_timeout_seconds=300, session_ttl_seconds=3600
+        )
+        == 300
+    )
+    assert (
+        resolve_session_ttl_seconds(
+            limits_timeout_seconds=7200, session_ttl_seconds=3600
+        )
+        == 3600
+    )
+    assert (
+        resolve_session_ttl_seconds(limits_timeout_seconds=0, session_ttl_seconds=3600)
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -656,7 +734,9 @@ async def test_max_active_sessions_enforced(tmp_path, monkeypatch):
 
     app.router.lifespan_context = noop_lifespan
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         first = await http_client.post(
             "/v1/sessions",
             json={
@@ -699,7 +779,9 @@ async def test_http_backend_adapter(tmp_path, monkeypatch):
     app = create_app()
     app.state.sandbox = build_app_state(settings)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http_client:
         backend = HttpSandboxBackend(base_url="http://test")
         backend._client = http_client
         session = await backend.create_session(
