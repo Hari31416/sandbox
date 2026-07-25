@@ -33,7 +33,8 @@ class MicrosandboxRuntime:
         self._active_execs: dict[str, Any] = {}
 
     def is_available(self) -> bool:
-        return is_installed()
+        import shutil
+        return is_installed() or shutil.which("msb") is not None or shutil.which("microsandbox") is not None
 
     def supports_snapshots(self) -> bool:
         return self.is_available()

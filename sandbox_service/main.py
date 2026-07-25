@@ -31,6 +31,11 @@ def enforce_sandbox_secure_defaults(settings: Settings) -> None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     enforce_sandbox_secure_defaults(settings)
+    try:
+        import microsandbox
+        await microsandbox.install()
+    except Exception as exc:
+        logger.warning("microsandbox.install check warning: %s", exc)
     init_database(settings.resolved_sqlite_path)
     state = build_app_state(settings)
     app.state.sandbox = state
