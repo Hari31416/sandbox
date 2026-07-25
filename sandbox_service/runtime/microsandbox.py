@@ -265,76 +265,84 @@ class MicrosandboxRuntime:
         max_output_bytes: int,
         snapshot: str | None = None,
     ) -> ExecResult:
-        await self.create_session(
-            session_id=sandbox_name,
-            sandbox_name=sandbox_name,
-            image=image,
-            root_path=root_path,
-            limits=limits,
-            snapshot=snapshot,
-        )
-        sandbox = self._sandboxes[sandbox_name]
-        exec_env = merge_exec_env(env)
-        shell_command = build_shell_command(
-            guest_workspace_path=self._guest_workspace_path,
-            command=command,
-            cwd=cwd,
-            env=exec_env,
-        )
-        stdout_chunks: list[bytes] = []
-        stderr_chunks: list[bytes] = []
-        exit_code: int | None = None
-        handle = None
-        try:
-            # Pass timeout to the SDK as well as asyncio.timeout: native
-            # iterators can ignore CancelledError, leaving guest/CPU stuck.
-            # Stdin.null() prevents interactive/GUI probes from blocking forever.
-            handle = await sandbox.shell_stream(
-                shell_command,
+        for attempt in range(2):
+            await self.create_session(
+                session_id=sandbox_name,
+                sandbox_name=sandbox_name,
+                image=image,
+                root_path=root_path,
+                limits=limits,
+                snapshot=snapshot,
+            )
+            sandbox = self._sandboxes.get(sandbox_name)
+            if sandbox is None:
+                raise RuntimeError(f"Sandbox {sandbox_name} unavailable")
+            exec_env = merge_exec_env(env)
+            shell_command = build_shell_command(
+                guest_workspace_path=self._guest_workspace_path,
+                command=command,
+                cwd=cwd,
                 env=exec_env,
-                timeout=float(timeout_seconds),
-                stdin=Stdin.null(),
             )
-            self._active_execs[sandbox_name] = handle
-            async with asyncio.timeout(float(timeout_seconds) + 5.0):
-                async for event in handle:
-                    kind = _exec_event_kind(event)
-                    data = getattr(event, "data", None)
-                    if kind == "stdout" and data:
-                        stdout_chunks.append(data)
-                    elif kind == "stderr" and data:
-                        stderr_chunks.append(data)
-                    elif kind == "exited":
-                        code = getattr(event, "code", None)
-                        exit_code = code if code is not None else 1
-                        # Exited is terminal; do not keep iterating the native
-                        # stream (can busy-spin / hold msb at 100% CPU).
-                        break
-        except TimeoutError:
-            if handle is not None:
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+            exit_code: int | None = None
+            handle = None
+            try:
+                handle = await sandbox.shell_stream(
+                    shell_command,
+                    env=exec_env,
+                    timeout=float(timeout_seconds),
+                    stdin=Stdin.null(),
+                )
+                self._active_execs[sandbox_name] = handle
+                async with asyncio.timeout(float(timeout_seconds) + 5.0):
+                    async for event in handle:
+                        kind = _exec_event_kind(event)
+                        data = getattr(event, "data", None)
+                        if kind == "stdout" and data:
+                            stdout_chunks.append(data)
+                        elif kind == "stderr" and data:
+                            stderr_chunks.append(data)
+                        elif kind == "exited":
+                            code = getattr(event, "code", None)
+                            exit_code = code if code is not None else 1
+                            break
+                break
+            except TimeoutError:
+                if handle is not None:
+                    with suppress(Exception):
+                        await asyncio.wait_for(
+                            handle.kill(),
+                            timeout=_EXEC_KILL_TIMEOUT_SECONDS,
+                        )
+                self._sandboxes.pop(sandbox_name, None)
+                timeout_note = b"command timed out\n"
+                return ExecResult(
+                    exit_code=124,
+                    stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
+                    stderr=_truncate(timeout_note + b"".join(stderr_chunks), max_output_bytes),
+                    timed_out=True,
+                )
+            except Exception as exc:
+                self._sandboxes.pop(sandbox_name, None)
                 with suppress(Exception):
-                    await asyncio.wait_for(
-                        handle.kill(),
-                        timeout=_EXEC_KILL_TIMEOUT_SECONDS,
+                    await self._ensure_sandbox_stopped(sandbox_name)
+                if attempt == 0 and ("socket" in str(exc).lower() or "no agent" in str(exc).lower()):
+                    logger.warning(
+                        "Sandbox socket lost for %s; retrying exec with fresh session: %s",
+                        sandbox_name,
+                        exc,
                     )
-            # Drop cached handle so the next exec re-attaches cleanly after kill.
-            self._sandboxes.pop(sandbox_name, None)
-            timeout_note = b"command timed out\n"
-            return ExecResult(
-                exit_code=124,
-                stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
-                stderr=_truncate(timeout_note + b"".join(stderr_chunks), max_output_bytes),
-                timed_out=True,
-            )
-        except Exception as exc:
-            return ExecResult(
-                exit_code=1,
-                stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
-                stderr=_truncate(str(exc).encode("utf-8"), max_output_bytes),
-            )
-        finally:
-            if self._active_execs.get(sandbox_name) is handle:
-                self._active_execs.pop(sandbox_name, None)
+                    continue
+                return ExecResult(
+                    exit_code=1,
+                    stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
+                    stderr=_truncate(str(exc).encode("utf-8"), max_output_bytes),
+                )
+            finally:
+                if self._active_execs.get(sandbox_name) is handle:
+                    self._active_execs.pop(sandbox_name, None)
 
         stdout = _truncate(b"".join(stdout_chunks), max_output_bytes)
         stderr = _truncate(b"".join(stderr_chunks), max_output_bytes)
