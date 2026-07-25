@@ -25,6 +25,7 @@ def validate_sandbox_secure_defaults(
     *,
     deploy_profile: str,
     auth_token: str | None,
+    default_backend: str = "microsandbox",
 ) -> None:
     profile = (deploy_profile or "local").strip().lower() or "local"
     if profile not in SECURE_PROFILES:
@@ -32,5 +33,9 @@ def validate_sandbox_secure_defaults(
     problems: list[str] = []
     if not (auth_token or "").strip():
         problems.append("SANDBOX_AUTH_TOKEN is required (non-empty bearer token)")
+    if (default_backend or "").strip().lower() != "microsandbox":
+        problems.append(
+            "SANDBOX_DEFAULT_BACKEND must be 'microsandbox' outside local/demo"
+        )
     if problems:
         raise SecureDefaultsError(profile, problems)

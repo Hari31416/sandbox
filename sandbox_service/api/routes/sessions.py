@@ -14,6 +14,7 @@ from sandbox_service.models import (
 from sandbox_service.repositories import SnapshotRecord
 from sandbox_service.runtime import get_runtime
 from sandbox_service.runtime.local import build_sandbox_name
+from sandbox_service.secure_defaults import is_secure_profile
 from sandbox_service.snapshot_workspace import restore_workspace
 from sandbox_service.workspace import ensure_workspace, remove_workspace
 
@@ -47,6 +48,11 @@ async def create_session(
         if snapshot_record
         else (body.backend or state.settings.default_backend)
     )
+    if (
+        is_secure_profile(state.settings.deploy_profile)
+        and backend_name != "microsandbox"
+    ):
+        raise HTTPException(status_code=403, detail="insecure_backend_forbidden")
     runtime = get_runtime(state.runtimes, backend_name)
     if snapshot_record and not runtime.supports_snapshots():
         raise HTTPException(status_code=400, detail="snapshots_not_supported")

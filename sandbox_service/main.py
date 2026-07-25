@@ -23,6 +23,7 @@ def enforce_sandbox_secure_defaults(settings: Settings) -> None:
     validate_sandbox_secure_defaults(
         deploy_profile=settings.deploy_profile,
         auth_token=settings.auth_token,
+        default_backend=settings.default_backend,
     )
 
 

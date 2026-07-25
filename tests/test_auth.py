@@ -81,3 +81,14 @@ def test_staging_profile_ok_with_token(monkeypatch, tmp_path) -> None:
     settings = get_settings()
     enforce_sandbox_secure_defaults(settings)
     get_settings.cache_clear()
+
+
+def test_staging_profile_refuses_local_backend(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SANDBOX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SANDBOX_DEPLOY_PROFILE", "staging")
+    monkeypatch.setenv("SANDBOX_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("SANDBOX_DEFAULT_BACKEND", "local")
+    get_settings.cache_clear()
+    with pytest.raises(SecureDefaultsError, match="SANDBOX_DEFAULT_BACKEND"):
+        enforce_sandbox_secure_defaults(get_settings())
+    get_settings.cache_clear()
