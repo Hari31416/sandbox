@@ -138,6 +138,17 @@ class MicrosandboxRuntime:
             with suppress(Exception):
                 await asyncio.wait_for(handle.kill(), timeout=_KILL_TIMEOUT_SECONDS)
 
+    async def _reset_sandbox_runtime(self, sandbox_name: str) -> None:
+        """Stop and remove a sandbox after an exec/runtime failure."""
+        try:
+            await self.delete_session(sandbox_name=sandbox_name)
+        except Exception:
+            logger.warning(
+                "sandbox cleanup failed for %s",
+                sandbox_name,
+                exc_info=True,
+            )
+
     async def create_session(
         self,
         *,
@@ -310,13 +321,11 @@ class MicrosandboxRuntime:
                             break
                 break
             except TimeoutError:
-                if handle is not None:
-                    with suppress(Exception):
-                        await asyncio.wait_for(
-                            handle.kill(),
-                            timeout=_EXEC_KILL_TIMEOUT_SECONDS,
-                        )
-                self._sandboxes.pop(sandbox_name, None)
+                logger.warning(
+                    "Sandbox exec timed out for %s; resetting runtime",
+                    sandbox_name,
+                )
+                await self._reset_sandbox_runtime(sandbox_name)
                 timeout_note = b"command timed out\n"
                 return ExecResult(
                     exit_code=124,
@@ -325,9 +334,7 @@ class MicrosandboxRuntime:
                     timed_out=True,
                 )
             except Exception as exc:
-                self._sandboxes.pop(sandbox_name, None)
-                with suppress(Exception):
-                    await self._ensure_sandbox_stopped(sandbox_name)
+                await self._reset_sandbox_runtime(sandbox_name)
                 if attempt == 0 and ("socket" in str(exc).lower() or "no agent" in str(exc).lower()):
                     logger.warning(
                         "Sandbox socket lost for %s; retrying exec with fresh session: %s",
