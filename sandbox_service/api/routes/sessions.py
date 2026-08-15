@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Query, Response
 
 from sandbox_service.app_state import AppState
+from sandbox_service.config import resolve_session_ttl_seconds
 from sandbox_service.models import (
     CreateSessionRequest,
     HeartbeatRequest,
@@ -23,7 +24,6 @@ from ._shared import (
     _get_active_session,
     _session_response,
     get_state,
-    resolve_session_ttl_seconds,
     router,
 )
 
@@ -71,6 +71,7 @@ async def create_session(
     ttl_seconds = resolve_session_ttl_seconds(
         limits_timeout_seconds=body.limits.timeout_seconds,
         session_ttl_seconds=state.settings.session_ttl_seconds,
+        default_exec_timeout_seconds=state.settings.default_exec_timeout_seconds,
     )
     session = state.sessions.create(
         workspace_id=body.workspace_id,
@@ -152,10 +153,19 @@ async def heartbeat_session(
     state: Annotated[AppState, Depends(get_state)],
     _: AuthDep,
 ) -> SessionResponse:
-    _get_active_session(state, session_id)
+    session = _get_active_session(state, session_id)
     extend = body.extend_seconds or state.settings.heartbeat_extend_seconds
+    max_lifetime_seconds = resolve_session_ttl_seconds(
+        limits_timeout_seconds=session.limits.timeout_seconds,
+        session_ttl_seconds=state.settings.session_ttl_seconds,
+        default_exec_timeout_seconds=state.settings.default_exec_timeout_seconds,
+    )
     try:
-        record = state.sessions.heartbeat(session_id, extend)
+        record = state.sessions.heartbeat(
+            session_id,
+            extend,
+            max_lifetime_seconds=max_lifetime_seconds,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="session_not_found") from None
     return _session_response(record)

@@ -675,23 +675,39 @@ async def test_reconcile_orphans_preserves_scratch_created_during_list(
 
 
 def test_resolve_session_ttl_seconds() -> None:
-    from sandbox_service.api.routes import resolve_session_ttl_seconds
+    from sandbox_service.config import resolve_session_ttl_seconds
 
     assert (
         resolve_session_ttl_seconds(
-            limits_timeout_seconds=300, session_ttl_seconds=3600
+            limits_timeout_seconds=300,
+            session_ttl_seconds=3600,
+            default_exec_timeout_seconds=300,
         )
-        == 300
+        == 600
     )
     assert (
         resolve_session_ttl_seconds(
-            limits_timeout_seconds=7200, session_ttl_seconds=3600
+            limits_timeout_seconds=7200,
+            session_ttl_seconds=3600,
+            default_exec_timeout_seconds=300,
         )
         == 3600
     )
     assert (
-        resolve_session_ttl_seconds(limits_timeout_seconds=0, session_ttl_seconds=3600)
+        resolve_session_ttl_seconds(
+            limits_timeout_seconds=0,
+            session_ttl_seconds=3600,
+            default_exec_timeout_seconds=0,
+        )
         == 1
+    )
+    assert (
+        resolve_session_ttl_seconds(
+            limits_timeout_seconds=120,
+            session_ttl_seconds=3600,
+            default_exec_timeout_seconds=300,
+        )
+        == 420
     )
 
 
@@ -712,7 +728,8 @@ async def test_session_ttl_honors_limits_timeout(mock_msb_client):
     payload = create.json()
     created = datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00"))
     expires = datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
-    assert abs((expires - created).total_seconds() - 120) < 2
+    # 120s user timeout plus default 300s exec headroom.
+    assert abs((expires - created).total_seconds() - 420) < 2
     await client.delete(f"/v1/sessions/{payload['id']}")
 
 

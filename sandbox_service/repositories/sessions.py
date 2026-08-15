@@ -120,14 +120,23 @@ class SessionRepository:
             ).fetchone()
         return int(row["n"] if row is not None else 0)
 
-    def heartbeat(self, session_id: str, extend_seconds: int) -> SessionRecord:
+    def heartbeat(
+        self,
+        session_id: str,
+        extend_seconds: int,
+        *,
+        max_lifetime_seconds: int | None = None,
+    ) -> SessionRecord:
         record = self.get(session_id)
         now = _utcnow()
         proposed = now + timedelta(seconds=max(1, extend_seconds))
-        # Never extend past the policy/session lifetime from create.
-        max_expires = record.created_at + timedelta(
-            seconds=max(1, int(record.limits.timeout_seconds))
+        lifetime = (
+            int(max_lifetime_seconds)
+            if max_lifetime_seconds is not None
+            else max(1, int(record.limits.timeout_seconds))
         )
+        # Never extend past the resolved session/VM lifetime from create.
+        max_expires = record.created_at + timedelta(seconds=max(1, lifetime))
         expires_at = min(proposed, max_expires)
         if expires_at < now:
             expires_at = now

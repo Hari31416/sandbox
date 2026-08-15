@@ -82,6 +82,23 @@ class Settings(BaseSettings):
         return self.data_dir / "exec-logs"
 
 
+def resolve_session_ttl_seconds(
+    *,
+    limits_timeout_seconds: int,
+    session_ttl_seconds: int,
+    default_exec_timeout_seconds: int = 300,
+) -> int:
+    """Lease and VM max duration: user timeout plus one max exec, service-capped.
+
+    Command timeout and session lifetime used to share the same 300s default, so a
+    max-length exec raced VM death. Add one exec-timeout of headroom so staging
+    plus a full command cannot share a clock with maxDurationSecs / lease expiry.
+    """
+    requested = max(1, int(limits_timeout_seconds))
+    headroom = max(0, int(default_exec_timeout_seconds))
+    return max(1, min(requested + headroom, int(session_ttl_seconds)))
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

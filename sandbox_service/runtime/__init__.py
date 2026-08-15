@@ -19,6 +19,8 @@ def build_runtime_registry(settings: Settings) -> dict[str, SandboxRuntime]:
         "microsandbox": MicrosandboxRuntime(
             scratch_root=scratch_root,
             guest_workspace_path=guest_workspace,
+            default_exec_timeout_seconds=settings.default_exec_timeout_seconds,
+            session_ttl_seconds=settings.session_ttl_seconds,
         ),
     }
 

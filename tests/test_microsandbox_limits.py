@@ -29,7 +29,8 @@ def test_build_create_config_applies_disk_and_timeout() -> None:
     )
     assert config["cpus"] == 2
     assert config["memoryMib"] == 2048
-    assert config["maxDurationSecs"] == 900
+    # User timeout 900 plus default exec timeout 300, under the 3600 cap.
+    assert config["maxDurationSecs"] == 1200
     image = config["image"]
     # Must not be a bare string — Image.oci carries upper_size_mib.
     assert image != "python:3.12"
@@ -51,4 +52,4 @@ def test_build_create_config_snapshot_skips_image_disk() -> None:
     )
     assert config["snapshot"] == "snap_abc"
     assert "image" not in config
-    assert config["maxDurationSecs"] == 120
+    assert config["maxDurationSecs"] == 420

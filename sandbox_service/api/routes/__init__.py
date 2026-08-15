@@ -6,9 +6,9 @@ from sandbox_service.api.routes._shared import (  # noqa: F401
     AuthDep,
     get_state,
     require_auth,
-    resolve_session_ttl_seconds,
     router,
 )
+from sandbox_service.config import resolve_session_ttl_seconds  # noqa: F401
 
 # Import domain modules for side-effect route registration (order preserved).
 from sandbox_service.api.routes import health as _health  # noqa: F401, E402

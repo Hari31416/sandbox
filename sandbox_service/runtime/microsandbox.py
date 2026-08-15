@@ -10,6 +10,7 @@ from microsandbox import Image, Sandbox, Snapshot, Volume, is_installed
 from microsandbox.events import ExitedEvent, StderrEvent, StdoutEvent
 from microsandbox.types import Stdin
 
+from sandbox_service.config import resolve_session_ttl_seconds
 from sandbox_service.models import SessionLimits
 from sandbox_service.policies import build_network
 from sandbox_service.runtime.base import ExecResult, SnapshotInfo
@@ -21,20 +22,35 @@ logger = logging.getLogger(__name__)
 _STOP_TIMEOUT_SECONDS = 10.0
 _KILL_TIMEOUT_SECONDS = 10.0
 _EXEC_KILL_TIMEOUT_SECONDS = 5.0
+_HEALTHY_SANDBOX_STATUSES = frozenset({"running"})
 
 
 class MicrosandboxRuntime:
     name = "microsandbox"
 
-    def __init__(self, *, scratch_root: Path, guest_workspace_path: str) -> None:
+    def __init__(
+        self,
+        *,
+        scratch_root: Path,
+        guest_workspace_path: str,
+        default_exec_timeout_seconds: int = 300,
+        session_ttl_seconds: int = 3600,
+    ) -> None:
         self._scratch_root = scratch_root
         self._guest_workspace_path = guest_workspace_path
+        self._default_exec_timeout_seconds = default_exec_timeout_seconds
+        self._session_ttl_seconds = session_ttl_seconds
         self._sandboxes: dict[str, Sandbox] = {}
         self._active_execs: dict[str, Any] = {}
 
     def is_available(self) -> bool:
         import shutil
-        return is_installed() or shutil.which("msb") is not None or shutil.which("microsandbox") is not None
+
+        return (
+            is_installed()
+            or shutil.which("msb") is not None
+            or shutil.which("microsandbox") is not None
+        )
 
     def supports_snapshots(self) -> bool:
         return self.is_available()
@@ -61,23 +77,30 @@ class MicrosandboxRuntime:
                 self._guest_workspace_path: Volume.bind(root_path),
             },
             "network": build_network(network_mode, allowed_hosts),
-            # Hard VM lifetime matching usage-policy sandbox_timeout_seconds.
-            "maxDurationSecs": max(1, int(limits.timeout_seconds)),
+            # VM lifetime outlasts one max-length command; not the same clock
+            # as command timeout (see resolve_session_ttl_seconds).
+            "maxDurationSecs": resolve_session_ttl_seconds(
+                limits_timeout_seconds=limits.timeout_seconds,
+                session_ttl_seconds=self._session_ttl_seconds,
+                default_exec_timeout_seconds=self._default_exec_timeout_seconds,
+            ),
         }
         if snapshot is not None:
             config["snapshot"] = snapshot
         else:
             # Writable OCI overlay size — enforces sandbox_disk_mb for rootfs writes.
-            config["image"] = Image.oci(image, upper_size_mib=max(512, int(limits.disk_mb)))
+            config["image"] = Image.oci(
+                image, upper_size_mib=max(512, int(limits.disk_mb))
+            )
         return config
 
     async def _attach_existing_sandbox(self, sandbox_name: str) -> Sandbox:
         handle = await Sandbox.get(sandbox_name)
         status = str(handle.status).lower()
-        if status == "running":
-            return await handle.connect()
-        if status in {"stopped", "paused", "crashed"}:
-            return await Sandbox.start(sandbox_name, detached=True)
+        if status not in _HEALTHY_SANDBOX_STATUSES:
+            raise RuntimeError(
+                f"sandbox {sandbox_name} is {status}; refusing to reuse overlay"
+            )
         return await handle.connect()
 
     async def _get_sandbox_handle(self, sandbox_name: str):
@@ -99,7 +122,9 @@ class MicrosandboxRuntime:
 
     async def _force_stop_connected(self, sandbox: Sandbox, sandbox_name: str) -> None:
         try:
-            await asyncio.wait_for(sandbox.stop_and_wait(), timeout=_STOP_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                sandbox.stop_and_wait(), timeout=_STOP_TIMEOUT_SECONDS
+            )
             return
         except Exception:
             logger.warning(
@@ -128,7 +153,9 @@ class MicrosandboxRuntime:
             return
         try:
             await asyncio.wait_for(handle.stop(), timeout=_STOP_TIMEOUT_SECONDS)
-            await asyncio.wait_for(handle.wait_until_stopped(), timeout=_STOP_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                handle.wait_until_stopped(), timeout=_STOP_TIMEOUT_SECONDS
+            )
         except Exception:
             logger.warning(
                 "catalog stop failed for sandbox %s; forcing kill",
@@ -170,10 +197,19 @@ class MicrosandboxRuntime:
             return
 
         handles = {handle.name: handle for handle in await Sandbox.list()}
-        if sandbox_name in handles:
-            sandbox = await self._attach_existing_sandbox(sandbox_name)
-            self._sandboxes[sandbox_name] = sandbox
-            return
+        existing_handle = handles.get(sandbox_name)
+        if existing_handle is not None:
+            status = str(existing_handle.status).lower()
+            if status in _HEALTHY_SANDBOX_STATUSES:
+                sandbox = await self._attach_existing_sandbox(sandbox_name)
+                self._sandboxes[sandbox_name] = sandbox
+                return
+            logger.warning(
+                "sandbox %s is %s; replacing with a fresh VM from the image",
+                sandbox_name,
+                status,
+            )
+            await self.delete_session(sandbox_name=sandbox_name)
 
         config = self._build_create_config(
             sandbox_name=sandbox_name,
@@ -322,20 +358,24 @@ class MicrosandboxRuntime:
                 break
             except TimeoutError:
                 logger.warning(
-                    "Sandbox exec timed out for %s; resetting runtime",
+                    "Sandbox exec timed out for %s; killing in-flight command",
                     sandbox_name,
                 )
-                await self._reset_sandbox_runtime(sandbox_name)
+                await self._kill_active_exec(sandbox_name)
                 timeout_note = b"command timed out\n"
                 return ExecResult(
                     exit_code=124,
                     stdout=_truncate(b"".join(stdout_chunks), max_output_bytes),
-                    stderr=_truncate(timeout_note + b"".join(stderr_chunks), max_output_bytes),
+                    stderr=_truncate(
+                        timeout_note + b"".join(stderr_chunks), max_output_bytes
+                    ),
                     timed_out=True,
                 )
             except Exception as exc:
                 await self._reset_sandbox_runtime(sandbox_name)
-                if attempt == 0 and ("socket" in str(exc).lower() or "no agent" in str(exc).lower()):
+                if attempt == 0 and (
+                    "socket" in str(exc).lower() or "no agent" in str(exc).lower()
+                ):
                     logger.warning(
                         "Sandbox socket lost for %s; retrying exec with fresh session: %s",
                         sandbox_name,

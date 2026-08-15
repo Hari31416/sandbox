@@ -9,16 +9,6 @@ from sandbox_service.app_state import AppState
 from sandbox_service.models import ArtifactInfo, SessionResponse, SnapshotResponse
 from sandbox_service.repositories import SessionRecord, SnapshotRecord
 
-
-def resolve_session_ttl_seconds(
-    *,
-    limits_timeout_seconds: int,
-    session_ttl_seconds: int,
-) -> int:
-    """Session lease TTL: honor policy timeout, capped by service ceiling."""
-    return max(1, min(int(limits_timeout_seconds), int(session_ttl_seconds)))
-
-
 router = APIRouter()
 
 
